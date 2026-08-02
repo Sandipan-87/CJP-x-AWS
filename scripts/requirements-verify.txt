@@ -1,0 +1,7 @@
+# Engram · Phase 0 verification only. NOT the runtime dependency set.
+# Runtime deps land in requirements.txt during Phase 1.
+psycopg[binary]>=3.2        # CLAUDE.md §2 pins psycopg3 as the hot path
+boto3>=1.35.0               # Bedrock: Titan V2 embeddings (+ Claude, if via Bedrock)
+mcp>=1.9.0                  # managed MCP server client
+anthropic>=0.69.0           # only if ENGRAM_LLM_PROVIDER=anthropic
+python-dotenv>=1.0.0        # .env loading for the verify scripts
