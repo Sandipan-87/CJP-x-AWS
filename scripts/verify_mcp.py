@@ -30,8 +30,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pathlib
 import sys
 import time
+
+# Load .env from the project root (this file lives in scripts/), so the script
+# works without `source .env` first.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(dotenv_path=pathlib.Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
 
 try:
     from mcp import ClientSession
@@ -163,7 +173,7 @@ async def run() -> int:
                 "WHERE (i * 2654435761) % 7 = 3"
             )
             print(f"  sql: {slow_sql}")
-            elapsed, payload, is_error = await timed_call(session, "select_query", {"sql": slow_sql})
+            elapsed, payload, is_error = await timed_call(session, "select_query", {"database": DATABASE or "defaultdb", "query": slow_sql})
             show(elapsed, payload, is_error, preview=400)
             record("slow-query seconds", f"{elapsed:.3f}")
             record("slow-query errored", str(is_error))
@@ -188,7 +198,7 @@ async def run() -> int:
                 unbounded = f"SELECT id, scope_id, label FROM {PROBE_TABLE}"
                 print(f"  sql: {unbounded}   (no LIMIT clause)")
                 elapsed, payload, is_error = await timed_call(
-                    session, "select_query", {"sql": unbounded, "database": DATABASE}
+                    session, "select_query", {"database": DATABASE, "query": unbounded}
                 )
                 n = show(elapsed, payload, is_error, preview=500)
                 # Row-count heuristics: prefer JSON, fall back to line counting.
@@ -214,7 +224,7 @@ async def run() -> int:
                 explicit = f"SELECT id FROM {PROBE_TABLE} LIMIT 400"
                 print(f"\n  sql: {explicit}   (explicit LIMIT above the default)")
                 elapsed, payload, is_error = await timed_call(
-                    session, "select_query", {"sql": explicit, "database": DATABASE}
+                    session, "select_query", {"database": DATABASE, "query": explicit}
                 )
                 n2 = show(elapsed, payload, is_error, preview=300)
                 record("explicit LIMIT 400 bytes", f"{n2:,}")
@@ -234,7 +244,7 @@ async def run() -> int:
                 "SELECT * FROM information_schema.tables LIMIT 1",
                 "SELECT * FROM pg_catalog.pg_class LIMIT 1",
             ):
-                elapsed, payload, is_error = await timed_call(session, "select_query", {"sql": sql})
+                elapsed, payload, is_error = await timed_call(session, "select_query", {"database": DATABASE or "defaultdb", "query": sql})
                 first = (payload.splitlines() or [""])[0][:110]
                 status = "REFUSED (correct)" if is_error else "!! ALLOWED — deny-list assumption is WRONG"
                 print(f"    {sql[:52]:<54} {status}")
@@ -251,7 +261,7 @@ async def run() -> int:
             else:
                 sql = f"SELECT id FROM {PROBE_TABLE} WHERE scope_id = 'org-alpha' LIMIT 3"
                 elapsed, payload, is_error = await timed_call(
-                    session, "explain_query", {"sql": sql, "database": DATABASE}
+                    session, "explain_query", {"database": DATABASE, "query": sql}
                 )
                 n = show(elapsed, payload, is_error, preview=900)
                 record("explain_query bytes", f"{n:,}")
@@ -265,9 +275,99 @@ async def run() -> int:
             padding = "-- " + ("x" * 200) + "\n"
             oversized = padding * 90 + "SELECT 1"   # ~18.3k chars
             print(f"  sql length: {len(oversized):,} chars (deliberately over the limit)")
-            elapsed, payload, is_error = await timed_call(session, "select_query", {"sql": oversized})
+            elapsed, payload, is_error = await timed_call(session, "select_query", {"database": DATABASE or "defaultdb", "query": oversized})
             show(elapsed, payload, is_error, preview=300)
             record("oversized SQL rejected", "yes (correct)" if is_error else "NO — limit is higher than documented")
+
+            # ---------------------------------------------------------------
+            # G. index introspection over MCP.
+            # `SHOW INDEXES FROM vec_probe` returns "Internal error" on
+            # CockroachDB CCL v26.2.1 when the table carries a vector index,
+            # and SHOW CREATE TABLE silently omits it. This probe asks whether
+            # the MCP control plane has the same blind spot — which decides
+            # whether P2-B3 can trust it for self-diagnosis at all.
+            # ---------------------------------------------------------------
+            head("PROBE G  get_table_schema — does MCP see the vector index?")
+            tool_schemas = {t.name: (t.inputSchema or {}) for t in listed.tools}
+            if "get_table_schema" not in tool_schemas:
+                print("  get_table_schema is not offered by this server — skipping.")
+                record("get_table_schema", "TOOL NOT OFFERED")
+            elif not DATABASE:
+                print("  SKIPPED: set CRDB_MCP_DATABASE to run this probe.")
+                record("get_table_schema", "NOT MEASURED (probe skipped)")
+            else:
+                decl = tool_schemas["get_table_schema"]
+                props = list((decl.get("properties") or {}).keys())
+                print(f"  declared properties : {props}")
+                print(f"  declared required   : {decl.get('required')}")
+
+                # Build args from whatever the server actually declares rather
+                # than guessing a fixed shape.
+                built: dict[str, str] = {}
+                for key, val in (
+                    ("database", DATABASE), ("database_name", DATABASE),
+                    ("schema", "public"), ("schema_name", "public"),
+                    ("table", PROBE_TABLE), ("table_name", PROBE_TABLE),
+                ):
+                    if key in props:
+                        built[key] = val
+                attempts = [built] if built else []
+                fallback = {"database": DATABASE, "table": PROBE_TABLE}
+                if fallback != built:
+                    attempts.append(fallback)
+
+                for args_ in attempts:
+                    print(f"\n  get_table_schema({args_})")
+                    elapsed, payload, is_error = await timed_call(session, "get_table_schema", args_)
+                    n = show(elapsed, payload, is_error, preview=1200)
+                    if is_error:
+                        continue
+                    saw_index = "vec_probe_scope_cos" in payload
+                    saw_vector = "VECTOR" in payload.upper()
+                    record("get_table_schema bytes", f"{n:,}")
+                    record("MCP sees VECTOR(1024) column", "yes" if saw_vector else "no")
+                    record(
+                        "MCP sees the vector INDEX",
+                        "YES — vec_probe_scope_cos visible"
+                        if saw_index
+                        else "NO — same introspection blind spot as SHOW INDEXES",
+                    )
+                    break
+                else:
+                    record("get_table_schema", "every argument shape failed — see output above")
+
+            # ---------------------------------------------------------------
+            # H. show_statement — a SECOND path to the index artifact.
+            # Its own description advertises 'SHOW INDEXES FROM mytable' and
+            # 'SHOW CREATE TABLE mytable', and it executes server-side via the
+            # Cloud API rather than through the console UI that returned
+            # "Internal error". If it works, it is the P0-P1 §1.2 artifact.
+            # ---------------------------------------------------------------
+            head("PROBE H  show_statement — SHOW INDEXES via MCP (console UI errored)")
+            if "show_statement" not in {t.name for t in listed.tools}:
+                print("  show_statement not offered — skipping.")
+                record("show_statement", "TOOL NOT OFFERED")
+            elif not DATABASE:
+                print("  SKIPPED: set CRDB_MCP_DATABASE.")
+                record("show_statement", "NOT MEASURED (probe skipped)")
+            else:
+                for stmt in (f"SHOW INDEXES FROM {PROBE_TABLE}",
+                             f"SHOW CREATE TABLE {PROBE_TABLE}",
+                             "SHOW DATABASES"):
+                    print(f"\n  show_statement({stmt!r})")
+                    elapsed, payload, is_error = await timed_call(
+                        session, "show_statement", {"database": DATABASE, "query": stmt}
+                    )
+                    n = show(elapsed, payload, is_error, preview=900)
+                    key = stmt.split(" FROM ")[0].split(" TABLE ")[0].strip()
+                    if is_error:
+                        record(f"show_statement · {key}", f"ERROR — {payload.splitlines()[0][:80]}")
+                    else:
+                        hit = "vec_probe_scope_cos" in payload
+                        record(
+                            f"show_statement · {key}",
+                            "OK — vector index VISIBLE" if hit else f"OK ({n:,} bytes), vector index not named",
+                        )
 
     head("P0-B2 MEASURED LIMITS  (copy this block into docs/phase0-verification.md)")
     width = max(len(k) for k, _ in results)

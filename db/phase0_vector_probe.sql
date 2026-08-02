@@ -52,7 +52,7 @@ SELECT
     (
       '[' ||
       (SELECT string_agg(
-                (sin(g.i * 0.013 + d.k * 0.7) * 0.5 + cos(d.k * 0.11) * 0.5)::STRING,
+                (sin((g.i::FLOAT8 * 0.013) + (d.k::FLOAT8 * 0.7)) * 0.5 + cos(d.k::FLOAT8 * 0.11) * 0.5)::STRING,
                 ',' ORDER BY d.k)
          FROM generate_series(1, 1024) AS d(k))
       || ']'

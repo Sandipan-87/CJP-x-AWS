@@ -22,8 +22,18 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import sys
 import time
+
+# Load .env from the project root (this file lives in scripts/), so the script
+# works without `source .env` first.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(dotenv_path=pathlib.Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
 
 try:
     import boto3

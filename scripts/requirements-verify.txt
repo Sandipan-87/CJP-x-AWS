@@ -3,5 +3,5 @@
 psycopg[binary]>=3.2        # CLAUDE.md §2 pins psycopg3 as the hot path
 boto3>=1.35.0               # Bedrock: Titan V2 embeddings (+ Claude, if via Bedrock)
 mcp>=1.9.0                  # managed MCP server client
-anthropic>=0.69.0           # only if ENGRAM_LLM_PROVIDER=anthropic
+httpx>=0.27.0               # Ollama Cloud client (LLD §6: direct /api/chat, no SDK)
 python-dotenv>=1.0.0        # .env loading for the verify scripts

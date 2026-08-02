@@ -24,3 +24,5 @@ out/
 Thumbs.db
 *.log
 scratch/
+db/
+fixtures/
