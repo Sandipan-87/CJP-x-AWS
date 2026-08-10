@@ -105,25 +105,34 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS (P0-P1 + P0-B1 both legs + license, see archived
-      block below) · P1-P1 migrations 001-004 written from LLD §6.2's frozen
-      DDL, dry-run parsed clean (`db/migrations/`, `db/migrations/README.md`)
-      · 26257 local block worked around via `.github/workflows/db-migrate.yml`
-      (GitHub Actions runners, off this network — §8 row 3).
-OPEN (non-gating)  S3 bucket `engram-agent-artifacts` does not exist yet —
-      IAM auth verified, `s3:CreateBucket` correctly denied (least-privilege
-      working as intended), bucket itself needs a manual console step (§8
-      row 7). Two GitHub repo secrets (ENGRAM_MEMORY_DSN, ENGRAM_TARGET_DSN)
-      not yet added — needed before `db-migrate.yml` can actually connect.
+      block below) · P1-P1 migrations 001-004 written, **001 + 002 APPLIED to
+      the live memory cluster, 2026-08-11** — tables/indexes/views/roles/
+      grants all exist for real · 26257 local block worked around via
+      `.github/workflows/db-migrate.yml` · **`agent/memory/db.py` written**
+      (LLD §6.1) — the async pool + all 22 DAO methods from the §6.1 table
+      (27 public methods incl. connect/close/3 dashboard_* wrappers), plus
+      `agent/errors.py` (StaleLeaseError) and `requirements.txt` (first
+      runtime deps). Import/compile-checked locally; a real-cluster smoke
+      test (`scripts/smoke_test_db.py` + `db-smoke-test.yml`) is WRITTEN but
+      not yet run — next action.
+OPEN (non-gating)  003 (vector index) and 004 (checkpoint TTL) NOT YET
+      applied — both have real prerequisites (seed corpus; `saver.setup()`)
+      that haven't happened yet, so this is correct sequencing, not a gap.
+      S3 bucket `engram-agent-artifacts` does not exist yet — IAM auth
+      verified, `s3:CreateBucket` correctly denied, bucket needs a manual
+      console step (§8 row 7).
 BLOCKING  Time. (26257 no longer blocks — see DONE.)
 ```
 
-**Next action, in order:** (1) add `ENGRAM_MEMORY_DSN`/`ENGRAM_TARGET_DSN` as GitHub repo secrets (manual — Checklist), then apply `001_engram_schema.sql` and `002_grants.sql` via `db-migrate.yml`; (2) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7), then re-run `scripts/verify_s3.py`; (3) `memory/db.py` (LLD §6.1, psycopg3 async pool + DAO methods) — the first runtime code, not just DDL.
+**Next action, in order:** (1) run `db-smoke-test.yml` against the live memory cluster to actually verify `agent/memory/db.py` (import/compile-checked only so far); (2) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7); (3) `agent/memory/leases.py` (retry/backoff/jitter policy wrapping `db.py`'s single-attempt lease methods) or `agent/memory/recall.py` (the only ANN call site) — whichever the demo path needs first; (4) migrations 003/004 once their prerequisites (seed corpus; LangGraph `saver.setup()`) are in place.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 12 · Migrations 001+002 confirmed applied live; wrote `agent/memory/db.py` — first application code.** User re-ran `db-migrate.yml` with Session 11's fix and both `001_engram_schema.sql` and `002_grants.sql` applied successfully to the live memory cluster — the SSL chain (Sessions 10→11) is closed, not just theorized. Wrote `agent/memory/db.py` (LLD §6.1): async pool (`AsyncConnectionPool`, pool size 5, statement_timeout 30s, per §6.1's numbers) plus all 22 DAO methods from the §6.1 table (27 public methods counting `connect`/`close`/the three `dashboard_*` view wrappers). **Judgment calls made explicit in the module docstring, not hidden:** (1) write-time fencing (§6.4's "every mutating DAO call accepts holder_id+fence_token") is implemented only for the lease methods themselves — LLD's own note offers "...or the caller verifies lease before write" as the alternative, and threading fence params through all 20 other methods was deferred to whatever calls them, keeping db.py a flat DAO layer; (2) `acquire_lease`/`takeover_lease` share one implementation — §6.4's SQL is a single transaction, not two; (3) no retry/backoff/jitter loop lives here — that's `agent/memory/leases.py`'s job, not yet written; db.py's lease methods are single-attempt primitives. **Two real bugs caught and fixed before commit, not shipped:** parameterizing `%s` *inside* an existing `INTERVAL '...'` quoted literal doesn't work with psycopg (produces broken SQL, not a bound param) — fixed by f-string-interpolating the trusted internal `DEFAULT_LEASE_TTL_S` constant directly, never bound as a query parameter there; `recall_ann`'s vector literal was being f-string-embedded into the query 3 times instead of bound via `%s::VECTOR(1024)` — fixed to match `insert_memory_item`'s already-correct pattern. Added `agent/errors.py` (`StaleLeaseError`, the only exception this module raises) and `requirements.txt` (first runtime deps: `psycopg[binary]`, `psycopg_pool`). Wrote `scripts/smoke_test_db.py` (exercises all 27 methods against a live cluster under a disposable `scope_id`, cleans up via `ON DELETE CASCADE`) and `.github/workflows/db-smoke-test.yml` to run it — **written, import/compile-checked locally, NOT yet run against the live cluster**, since local 26257 is still blocked; that run is the next action, not this session's.
 
 **2026-08-11 — Session 11 · `sslrootcert=system` measured to fail on the runner; corrected to the literal per-cluster cert fetch.** Session 10's fix (append `sslrootcert=system`) shipped but the next real run against the live memory cluster returned `SSL error: certificate verify failed` — a different, later failure than the missing-file error it fixed, so it moved the problem rather than solving it. Fetched `https://cockroachlabs.cloud/clusters/<CLUSTER_ID>/cert` directly (no auth needed) and confirmed by hand: it returns a genuine, unexpired cert chaining to Let's Encrypt's ISRG Root X1 — a real public CA, contradicting nothing said before. **Diagnosis:** `psycopg[binary]`'s wheel bundles its own static libpq/OpenSSL build; `sslrootcert=system` resolves against *that* build's baked-in trust store, not the runner's actual `/etc/ssl/certs` — a packaging quirk, not a CockroachDB Cloud trust problem. **Fix, reverting Session 10's auto-injection:** `scripts/run_sql.py` now takes an explicit `--sslrootcert <path>` flag instead of guessing; `db-migrate.yml` fetches the correct cluster's cert (mapped from the `target` input to its already-public cluster ID) into a workspace file each run and passes its path. Cluster IDs are not secrets — both already appear in `CLAUDE.md`/docs in plaintext. **Not yet re-verified against the live cluster** — this is the third attempt; if this also fails, get the exact new error before trying a fourth fix blind.
 

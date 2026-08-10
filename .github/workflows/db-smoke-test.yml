@@ -1,0 +1,35 @@
+name: DB Smoke Test
+
+# Engram · exercises agent/memory/db.py's full DAO against the live memory
+# cluster. [PLUMBER] Same network rationale as db-migrate.yml (§ its own
+# header comment) -- GitHub-hosted runners sit outside the local squid block.
+#
+# Creates rows under a unique scope_id and deletes them all at the end via
+# ON DELETE CASCADE from their own test task_id. Safe to run repeatedly
+# against the real memory cluster; never touches any pre-existing row.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt -r scripts/requirements-verify.txt
+
+      - name: Fetch the memory cluster's CA cert
+        run: |
+          set -e
+          curl -fsSL "https://cockroachlabs.cloud/clusters/ee8bc725-9ea6-428a-afd7-7b49a879f3ed/cert" -o cluster-ca.crt
+          openssl x509 -in cluster-ca.crt -noout -subject -dates
+
+      - name: Run the DAO smoke test
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+        run: python scripts/smoke_test_db.py --sslrootcert "$(pwd)/cluster-ca.crt"

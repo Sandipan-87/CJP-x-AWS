@@ -1,0 +1,5 @@
+# Engram · runtime dependencies. scripts/requirements-verify.txt is separate
+# (Phase 0 probes only). This file grows as each LLD module lands — nothing
+# speculative added ahead of code that actually imports it.
+psycopg[binary]>=3.2        # CLAUDE.md §2, agent/memory/db.py — the async pool driver
+psycopg_pool>=3.2           # AsyncConnectionPool, used directly by agent/memory/db.py
