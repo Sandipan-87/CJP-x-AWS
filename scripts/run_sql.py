@@ -154,6 +154,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="parse and list statements, no connection")
     ap.add_argument("--stop-before-step", type=int, default=None)
     ap.add_argument("--stop-on-error", action="store_true", help="abort at the first failure")
+    ap.add_argument("--sslrootcert", default=None,
+                     help="path to the cluster's CA cert (e.g. downloaded from "
+                          "https://cockroachlabs.cloud/clusters/<CLUSTER_ID>/cert). "
+                          "Appended to the DSN if it doesn't already set sslrootcert.")
     args = ap.parse_args()
 
     load_dotenv()
@@ -193,14 +197,18 @@ def main() -> int:
             f"FATAL: no DSN. Set {args.dsn_var} in .env (or pass --dsn).\n"
             "       .env is gitignored; never put a real DSN in .env.example."
         )
-    if "sslrootcert=" not in dsn:
-        # CockroachDB Cloud clusters are signed by a publicly-trusted CA, so the OS
-        # trust store verifies them — no cluster-specific root.crt needs shipping.
-        # Without this, sslmode=verify-full looks for ~/.postgresql/root.crt, which
-        # doesn't exist on a fresh machine (e.g. a GitHub Actions runner) and fails
-        # closed rather than silently skipping verification.
+    if args.sslrootcert and "sslrootcert=" not in dsn:
+        # CockroachDB Cloud's CA chains to a publicly-trusted root (ISRG Root X1 /
+        # Let's Encrypt), but `sslrootcert=system` is unreliable against psycopg's
+        # own bundled libpq build (manylinux wheel, its own static OpenSSL — "system"
+        # resolves against ITS trust store from build time, not the host's actual
+        # /etc/ssl/certs). Measured 2026-08-11: verify-full + sslrootcert=system
+        # failed with "certificate verify failed" on a GitHub Actions runner even
+        # though the cert chain is genuinely public-CA-signed. The reliable fix is
+        # the literal one: fetch the real per-cluster cert and point at the file.
+        rootcert_path = pathlib.Path(args.sslrootcert).expanduser().resolve()
         sep = "&" if "?" in dsn else "?"
-        dsn = f"{dsn}{sep}sslrootcert=system"
+        dsn = f"{dsn}{sep}sslrootcert={rootcert_path}"
     safe = re.sub(r"//([^:]+):[^@]+@", r"//\1:***@", dsn)
     print(f"dsn        : {safe}\n")
 

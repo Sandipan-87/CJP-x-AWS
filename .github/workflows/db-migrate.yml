@@ -50,6 +50,19 @@ jobs:
 
       - run: pip install -r scripts/requirements-verify.txt
 
+      - name: Fetch the cluster's CA cert
+        # Not a secret — cluster IDs are already public in CLAUDE.md/docs, and this
+        # endpoint requires no auth. `sslmode=verify-full` needs a real cert file;
+        # `sslrootcert=system` was tried and measured to fail on this runner even
+        # though the chain IS publicly-trusted (psycopg[binary]'s bundled libpq
+        # resolves "system" against ITS OWN build-time trust store, not the host's).
+        run: |
+          set -e
+          CLUSTER_ID="ee8bc725-9ea6-428a-afd7-7b49a879f3ed"   # memory
+          if [ "${{ inputs.target }}" = "target" ]; then CLUSTER_ID="ff3851bb-3869-4772-ba64-fd3076b3917b"; fi
+          curl -fsSL "https://cockroachlabs.cloud/clusters/$CLUSTER_ID/cert" -o cluster-ca.crt
+          openssl x509 -in cluster-ca.crt -noout -subject -issuer -dates
+
       - name: Run against the chosen cluster
         env:
           ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
@@ -59,7 +72,7 @@ jobs:
           DSN_VAR="ENGRAM_MEMORY_DSN"
           if [ "${{ inputs.target }}" = "target" ]; then DSN_VAR="ENGRAM_TARGET_DSN"; fi
 
-          ARGS=(--dsn-var "$DSN_VAR" --stop-on-error)
+          ARGS=(--dsn-var "$DSN_VAR" --stop-on-error --sslrootcert "$(pwd)/cluster-ca.crt")
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS+=(--dry-run); fi
 
           echo "file   : ${{ inputs.file }}"
