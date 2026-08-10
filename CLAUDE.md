@@ -104,35 +104,38 @@ PHASE 0 — CLOSED 2026-08-11. PHASE 1 — STARTED same day (P1-P1 migrations
 written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
    (4 migration files) for the first time this project.
-DONE  Phase 0 exit gate PASS (P0-P1 + P0-B1 both legs + license) · P1-P1
-      migrations 001-004 written, **001 + 002 APPLIED live** ·
-      **`agent/memory/db.py`, `scoring.py`, `recall.py` all WRITTEN AND
-      VERIFIED LIVE, 2026-08-11** — `smoke_test_db.py` 29/29, `smoke_test_
-      recall.py` 10/10, `tests/test_scoring.py` 14/14 (T1, LLD §14) — all
-      against the real memory cluster / pure functions, not import-checked
-      guesses. Real bugs found and fixed live, not shipped (Windows event-
-      loop policy, an uncommitted pool `configure` callback, a caught
-      `UniqueViolation` leaving a txn aborted, `audit_replay`'s AOST
-      pattern — full detail in the session entries below). S3 bucket
-      **created** (user, via console).
-OPEN (non-gating)  S3 bucket exists but the IAM user has no `PutObject`/
-      `GetObject` grant on it yet (§8 row 7) — separate AWS action from
-      creation, still manual. Migrations 003 (vector index) and 004
-      (checkpoint TTL) NOT YET applied — real prerequisites (seed corpus;
-      `saver.setup()`) haven't happened, correct sequencing not a gap.
-      26257 is open right now only because of the user's VPN — treat it as
-      still blocked by default, not fixed.
+DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
+      APPLIED live · **`agent/memory/{db,scoring,recall,leases}.py` all
+      WRITTEN AND VERIFIED LIVE, 2026-08-11** — `smoke_test_db.py` 29/29,
+      `smoke_test_recall.py` 10/10, `smoke_test_leases.py` 6/6,
+      `tests/test_scoring.py` 14/14 (T1, LLD §14) — 59 checks total against
+      the real memory cluster / pure functions, not import-checked guesses.
+      `leases.py`'s smoke test is the actual kill-and-resume mechanism
+      end-to-end: second holder blocked, forced expiry (simulated
+      `stop-task`), `takeover()` succeeds, original holder's own background
+      renew loop detects the loss and signals it — first run, no bugs.
+      **S3 fully closed** — bucket created, IAM policy attached, gate
+      PASSES (real put/get/hash round-trip measured, not simulated).
+OPEN (non-gating)  Migrations 003 (vector index) and 004 (checkpoint TTL)
+      NOT YET applied — real prerequisites (seed corpus; `saver.setup()`)
+      haven't happened, correct sequencing not a gap. `agent/providers/
+      cohere_embed.py` not yet written, so `recall()` still takes a
+      precomputed vector, not raw incident text. 26257 is open right now
+      only because of the user's VPN — treat it as still blocked by
+      default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/memory/leases.py` (retry/backoff/jitter policy wrapping `db.py`'s single-attempt lease methods) — the last piece invariant #5 needs before a graph node can safely hold a task; (2) attach the missing S3 IAM policy (manual — §8 row 7); (3) `agent/providers/cohere_embed.py` (unblocks a real embed→recall round-trip, not just a pre-embedded-vector one); (4) migrations 003/004 once their prerequisites are in place.
+**Next action, in order:** (1) `agent/providers/cohere_embed.py` (unblocks a real embed→recall round-trip); (2) `agent/memory/embeddings.py` (write-path embedding + fingerprint cache, so seeding can start); (3) migrations 003/004 once their prerequisites are in place; (4) the first graph node (`agent/nodes/observe.py` or `recall.py`) — the point where `agent/memory/*` stops being isolated modules and becomes a running agent.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 15 · S3 fully closed (IAM policy attached, gate PASSES); wrote + live-verified `agent/memory/leases.py` — the actual kill-and-resume mechanism.** User attached the scoped IAM policy from the step-by-step handed over last session; re-running `verify_s3.py` now passes fully — a real object round-tripped with a byte-identical sha256 (`docs/phase0-verification.md` §3.6). Cleanup correctly fails `AccessDenied` (the policy never granted `DeleteObject`) — one small leftover test object in the bucket, deliberate scope not a bug. `docs/blocked-register.md` §7 marked RESOLVED. Wrote `agent/memory/leases.py` (LLD §6.4): the retry/backoff/jitter policy the runbook comment described but `db.py` deliberately didn't implement (single-attempt primitives only, by design — see `db.py`'s own docstring). `LeaseHandle` auto-renews in the background and exposes `wait_until_lost()` — the mechanism that turns a lost lease into something a graph node can actually react to mid-work, not just fail silently on its next write. Added `LeaseAcquireTimeoutError` to `agent/errors.py` (distinct from `StaleLeaseError`: never winning a lease vs. losing one already held). **Verified live, first run, no bugs** — `scripts/smoke_test_leases.py`, 6/6: a second holder correctly times out while a live lease is held; a forced expiry (simulating `aws ecs stop-task`) lets a new holder `takeover()`; the original holder's own background renew loop detects the loss within its next renew cycle and signals it. This is the literal mechanism behind the submission's second demo beat ("it survives"), now measured working against the real memory cluster, not simulated. Wired into `db-smoke-test.yml`. `agent/memory/{db,scoring,recall,leases}.py` are now all written and live-verified — 59 checks total across four smoke tests + the unit suite.
 
 **2026-08-11 — Session 14 · S3 bucket created (IAM grant still pending); archived the SSL-saga changelog bloat; wrote + live-verified `scoring.py`/`recall.py`.** User created the `engram-agent-artifacts` bucket via console — `verify_s3.py` now fails one step later (`AccessDenied` on `PutObject`, not `NoSuchBucket`): bucket creation and IAM policy are separate AWS actions, only the first is done (`docs/blocked-register.md` §7, new evidence in `docs/phase0-verification.md` §3.5). **Doc cleanup:** moved Sessions 9–11's verbose migration/SSL-debugging entries to `docs/changelog-archive.md` verbatim (same "moved, never deleted" pattern as Sessions 1–3) and replaced them with one condensed pointer in this file — ~4KB smaller, nothing actually lost; Sessions 12–13 stayed in full since they're delivered code and real bug fixes, not workaround narrative. **New code:** `agent/memory/scoring.py` (LLD §6.6's four pure re-rank functions) and `agent/memory/recall.py` (ANN→hybrid-rerank→bundle, sitting on top of `db.py`'s `recall_ann`). **Deviation stated up front, not hidden:** the LLD's `hybrid(item, incident, ...)` signature uses duck-typed objects never defined elsewhere in the doc, and `item.entities` as a *set* doesn't match the schema (`memory_items.entity_id` is a single FK) — rewrote `hybrid()` with explicit scalar/set keyword args, same math and hard filters, no invented object type; `recall.py`'s docstring records the resulting limitation (an item has 0–1 entities, not a set). Added `db.get_candidate_details()`'s missing `entity_id` column (needed by the affinity term) — a one-line, surgical addition to already-shipped code. **Verified, not just written:** `tests/test_scoring.py` (T1, LLD §14) — 14/14 pass, pure functions, no cluster; `scripts/smoke_test_recall.py` (new) — 10/10 pass against the live memory cluster (VPN still up from Session 13), seeding two real 1024-dim vectors and confirming `recall_ann` orders correctly, `get_candidate_details` returns the new `entity_id` column, and the full `recall()` pipeline hard-filters/scores/ranks correctly end-to-end. Both smoke tests wired into `.github/workflows/db-smoke-test.yml` for when the VPN isn't available. **Not done:** `agent/memory/leases.py` (retry/backoff policy) and `agent/providers/cohere_embed.py` (so `recall()` can take raw incident text instead of a precomputed vector) — next chunks.
 
@@ -164,7 +167,7 @@ One entry per session, reverse-chronological. **Entries are never deleted** — 
 4. **First commit `4304008` has no `LICENSE`.** [ILLUSIONIST] **RESOLVED 2026-08-11 — added as a normal commit, pushed.** The "amend the root commit" plan conflated two Devpost rules; only the About-sidebar visibility rule governs LICENSE placement, and a remote already existed by the time this was checked.
 5. **`design/03-adr.md` + `architecture.svg` cited but absent.** [BRAINS] OPEN — decisions inline in HLD §3; **ADR-001/002 superseded by §2.1**.
 6. **`research/execution_roadmap.md` is pre-pivot** — Bedrock/Titan tasks stale (and it was mis-recorded here as missing until 2026-08-10). [BRAINS] **RESOLVED 2026-08-11 — deleted**, not retargeted: nothing else cited it, and its content is already superseded by §2.1/§6/§8 here. Recoverable from git history (commit `4304008`) if ever needed.
-7. **S3 bucket `engram-agent-artifacts` — created 2026-08-11, IAM grant still missing.** [PLUMBER] **OPEN — blocks Phase 3 (invariant #11), not Phase 0.** Bucket now exists (user created it via console); `scripts/verify_s3.py` now fails one step later — `AccessDenied` on `PutObject`, because the `engram-phase0` IAM user has no `s3:PutObject`/`s3:GetObject` grant on it yet. Bucket creation and IAM policy are separate AWS actions; only the first happened. Fix: attach a policy granting `s3:PutObject`/`s3:GetObject` scoped to `arn:aws:s3:::engram-agent-artifacts/*` (never `s3:*`, never `Resource: "*"` — invariant #11) — manual AWS console step. Diagnosis: `docs/blocked-register.md` §7.
+7. **S3 bucket `engram-agent-artifacts`.** [PLUMBER] **RESOLVED 2026-08-11 — bucket created, IAM policy attached, `verify_s3.py` gate PASSES.** Two separate manual AWS steps (bucket creation, then a scoped policy — `s3:PutObject`+`s3:GetObject` on `arn:aws:s3:::engram-agent-artifacts/*`, never `s3:*`) closed in sequence; a real object round-tripped with a byte-identical sha256. `DeleteObject` was never granted, so the probe's own cleanup step correctly fails — one small leftover test object in the bucket, harmless, deliberate scope. Diagnosis: `docs/blocked-register.md` §7.
 
 ---
 

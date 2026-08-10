@@ -66,12 +66,12 @@ Recorded here and in `CLAUDE.md` as *missing* until 2026-08-10; that was wrong. 
 
 ---
 
-## 7 — S3 bucket `engram-agent-artifacts` · [PLUMBER] · **PARTIALLY RESOLVED 2026-08-11 — bucket exists, IAM grant still missing**
+## 7 — S3 bucket `engram-agent-artifacts` · [PLUMBER] · **RESOLVED 2026-08-11 — bucket created, IAM policy attached, gate PASSES**
 
-**Original symptom (RESOLVED).** `scripts/verify_s3.py` authenticated correctly as `arn:aws:iam::532749777349:user/engram-phase0` but `PutObject` failed `NoSuchBucket` in `us-east-1` — the bucket was named in design docs and `.env` but never provisioned. A direct test confirmed the IAM identity correctly **lacks** `s3:CreateBucket` — least-privilege working as designed, not a misconfiguration. **Fix applied:** user created the bucket via the AWS console.
+**Symptom 1 (RESOLVED).** `scripts/verify_s3.py` authenticated correctly as `arn:aws:iam::532749777349:user/engram-phase0` but `PutObject` failed `NoSuchBucket` in `us-east-1` — the bucket was named in design docs and `.env` but never provisioned. A direct test confirmed the IAM identity correctly **lacks** `s3:CreateBucket` — least-privilege working as designed, not a misconfiguration. **Fix applied:** user created the bucket via the AWS console.
 
-**Current symptom (OPEN).** Re-running `scripts/verify_s3.py` now gets one step further and fails differently: `AccessDenied` on `PutObject` — `User: arn:aws:iam::532749777349:user/engram-phase0 is not authorized to perform: s3:PutObject`. Bucket creation and IAM policy are two separate AWS actions; only the bucket was provisioned.
+**Symptom 2 (RESOLVED).** Re-running got one step further and failed differently: `AccessDenied` on `PutObject` — bucket creation and IAM policy are two separate AWS actions; only the bucket had been provisioned. **Fix applied:** user attached an inline policy to `engram-phase0` granting `s3:PutObject` + `s3:GetObject` scoped to `arn:aws:s3:::engram-agent-artifacts/*` — never `s3:*`, never `Resource: "*"` (invariant #11's own constraint).
 
-**Consequence.** Invariant #11 (large artifacts to S3, row holds URI + hash) still has no writable path. Not a Phase 0 gate item — `docs/phase0-verification.md`'s exit gate is P0-P1 + P0-B1 + license only — but it blocks Phase 3 work on the S3 artifact path.
+**Result.** `scripts/verify_s3.py`'s gate (auth + put + get/hash) **PASSES** — a real object round-tripped with a byte-identical sha256. Full transcript: `docs/phase0-verification.md` §3.6.
 
-**Fix.** Attach a policy to the `engram-phase0` IAM user (or a role it assumes) granting `s3:PutObject` and `s3:GetObject` **scoped to `arn:aws:s3:::engram-agent-artifacts/*`** — never `s3:*`, never `Resource: "*"` (invariant #11's own constraint). A manual AWS console/IAM step, same reasoning as the bucket creation itself: not something to grant the automation-facing identity broader rights to do on its own. Re-run `scripts/verify_s3.py` afterward. See `docs/external-constraints.md` §5.
+**One known, deliberate gap, not a bug.** The policy grants only Put/Get, not Delete — the probe's own cleanup step correctly fails `AccessDenied`, leaving one small (60-byte) test object at `s3://engram-agent-artifacts/phase0-probes/verify_s3-44925853c594.txt`. Delete it via the console if desired; it's harmless either way, and least-privilege is working as intended (Delete was never asked for).

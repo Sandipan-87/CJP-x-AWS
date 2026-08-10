@@ -1,9 +1,10 @@
 """Engram · typed exception taxonomy (design/02-low-level-design.md §16).  [BRAINS + PLUMBER]
 
-Grown incrementally as each module needs one — only `StaleLeaseError` exists
-so far, because it is the only exception `agent/memory/db.py` (§6.1) raises.
-The rest of the taxonomy (`LlmRateLimitError`, `EmbeddingDimensionError`,
-`McpTimeoutError`, ...) lands with the modules that actually raise them.
+Grown incrementally as each module needs one. `StaleLeaseError` is raised by
+`agent/memory/db.py` (§6.1); `LeaseAcquireTimeoutError` by `agent/memory/
+leases.py` (§6.4's retry/backoff policy layer). The rest of the taxonomy
+(`LlmRateLimitError`, `EmbeddingDimensionError`, `McpTimeoutError`, ...)
+lands with the modules that actually raise them.
 """
 
 from __future__ import annotations
@@ -29,4 +30,22 @@ class StaleLeaseError(EngramError):
         super().__init__(
             f"stale lease: holder={holder_id!r} fence_token={fence_token!r} "
             f"no longer owns task_id={task_id!r}"
+        )
+
+
+class LeaseAcquireTimeoutError(EngramError):
+    """Never won the lease after retrying — a live holder held it the whole
+    time. Distinct from `StaleLeaseError` (losing a lease already held):
+    this is failing to ever get one, not losing one — LLD §6.4's runbook
+    comment ("back off with jitter and retry") caps out somewhere, and this
+    is what it raises when it does.
+    """
+
+    def __init__(self, task_id: str, holder_id: str, attempts: int) -> None:
+        self.task_id = task_id
+        self.holder_id = holder_id
+        self.attempts = attempts
+        super().__init__(
+            f"could not acquire lease for task_id={task_id!r} as holder={holder_id!r} "
+            f"after {attempts} attempt(s) — a live holder held it throughout"
         )

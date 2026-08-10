@@ -576,6 +576,35 @@ the first happened. **Still not a Phase 0 gate item.** Fix + diagnosis:
 `docs/blocked-register.md` §7 (attach a policy scoped to
 `arn:aws:s3:::engram-agent-artifacts/*` — never `s3:*`).
 
+## 3.6 · S3 re-probe after the IAM grant — run 2026-08-11, same day — GATE PASSES
+
+User attached an inline policy (`s3:PutObject`+`s3:GetObject`, scoped to
+`arn:aws:s3:::engram-agent-artifacts/*`) to `engram-phase0`. Re-running:
+
+```text
+PROBE B  put — s3://engram-agent-artifacts/phase0-probes/verify_s3-44925853c594.txt
+  PutObject OK in 2.88s, 60 bytes
+  >> put: OK
+
+PROBE C  get + hash — byte-identical round-trip?
+  GetObject OK in 0.37s, 60 bytes
+  expected sha256 : 94bf557a570253e213bc65c9c0ed6d65eca0da55c72266354fd123d2d4fd4ac9
+  got sha256      : 94bf557a570253e213bc65c9c0ed6d65eca0da55c72266354fd123d2d4fd4ac9
+  >> get + hash round-trip: OK — hashes match
+
+PROBE E  cleanup — delete the probe object
+  >> cleanup: FAIL — AccessDenied
+
+GATE (auth + put + get/hash match): PASS
+```
+
+**Result: PASS.** Content hash matches byte-for-byte after a real network
+round-trip — invariant #11's write path is now measured, not assumed.
+**Cleanup correctly failed**: the policy grants only Put/Get, not Delete, so
+`s3://engram-agent-artifacts/phase0-probes/verify_s3-44925853c594.txt` is a
+small (60-byte) leftover test object — expected given the policy scope, not
+a bug; delete it via the console if desired, or leave it (harmless).
+
 ---
 
 ## 4 · P0-B2 — Managed MCP server limits  `[BRAINS]`
