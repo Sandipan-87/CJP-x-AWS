@@ -4,6 +4,36 @@
 
 ---
 
+### 2026-08-11 — Session 11 · `sslrootcert=system` measured to fail on the runner; corrected to the literal per-cluster cert fetch
+
+*`CLAUDE.md` §7 carries the condensed Sessions 9–11 entry; this is the long form.*
+
+Session 10's fix (append `sslrootcert=system`) shipped but the next real run against the live memory cluster returned `SSL error: certificate verify failed` — a different, later failure than the missing-file error it fixed, so it moved the problem rather than solving it. Fetched `https://cockroachlabs.cloud/clusters/<CLUSTER_ID>/cert` directly (no auth needed) and confirmed by hand: it returns a genuine, unexpired cert chaining to Let's Encrypt's ISRG Root X1 — a real public CA, contradicting nothing said before.
+
+**Diagnosis:** `psycopg[binary]`'s wheel bundles its own static libpq/OpenSSL build; `sslrootcert=system` resolves against *that* build's baked-in trust store, not the runner's actual `/etc/ssl/certs` — a packaging quirk, not a CockroachDB Cloud trust problem.
+
+**Fix, reverting Session 10's auto-injection:** `scripts/run_sql.py` now takes an explicit `--sslrootcert <path>` flag instead of guessing; `db-migrate.yml` fetches the correct cluster's cert (mapped from the `target` input to its already-public cluster ID) into a workspace file each run and passes its path. Cluster IDs are not secrets — both already appear in `CLAUDE.md`/docs in plaintext.
+
+---
+
+### 2026-08-11 — Session 10 · First `db-migrate.yml` run surfaced a real SSL gap; fixed in `run_sql.py`, not per-secret
+
+User added both repo secrets and ran `001_engram_schema.sql` — dry-run passed, live run failed: `root certificate file "/home/runner/.postgresql/root.crt" does not exist`. `sslmode=verify-full` in the DSN expects a cluster-specific CA file at a fixed local path that no fresh machine has.
+
+**Fix, in `scripts/run_sql.py` itself, not in the secret values:** if the DSN has no `sslrootcert=`, append `sslrootcert=system` before connecting — CockroachDB Cloud clusters are signed by a publicly-trusted CA, so the OS trust store verifies them without shipping a cluster-specific file. Confirmed locally (still behind the squid block, so only the *parameter* could be checked, not a real handshake): `sslrootcert=system` against a dummy host produced a connection timeout, not a "invalid value for parameter" error, meaning libpq (18.0.3 here, same PyPI wheel the runner installs) recognizes it. **Superseded by Session 11** — this fix moved the failure rather than closing it.
+
+---
+
+### 2026-08-11 — Session 9 · Phase 0 exit gate reached, then Phase 1 (P1-P1) started: migrations written, 26257 worked around via GitHub Actions
+
+Wrote `db/migrations/001_engram_schema.sql` through `004_checkpoint_ttl.sql` verbatim from the frozen DDL in `design/02-low-level-design.md` §6.2, split across four files per the runbook order in §6.3 rather than as one block: 001 = tables/indexes/views, 002 = roles+grants+`ALTER DEFAULT PRIVILEGES` (LLD note (c): a one-shot `GRANT ... ON ALL TABLES` misses tables created later), 003 = the C-SPANN vector index alone (must run after seeding, invariant #1), 004 = the three LangGraph checkpoint tables' TTL (must run immediately after `AsyncCockroachDBSaver.setup()` on an empty cluster, invariant #7 — TTL on a hot table forces a full rewrite). Added `db/migrations/README.md` recording that order explicitly. All four parse clean via `scripts/run_sql.py --dry-run` (26/6/1/3 statements respectively).
+
+**Solved the 26257 local block without admin, hotspot, or EC2** (confirmed via a live `ec2:DescribeInstances` call that the `engram-phase0` IAM user has no EC2 permission at all — not attempted around, since widening IAM for this would violate CLAUDE.md §0's own corollary): wrote `.github/workflows/db-migrate.yml`, a `workflow_dispatch` job that runs `scripts/run_sql.py` against `ENGRAM_MEMORY_DSN`/`ENGRAM_TARGET_DSN` repo secrets on GitHub-hosted runners — those sit outside the local squid proxy entirely. Defaults to `--dry-run` so an accidental trigger can't mutate a cluster.
+
+Updated `docs/blocked-register.md` §3 (workaround adopted, not a real fix — network-side cause unchanged) and `CLAUDE.md` §6/§8 row 3.
+
+---
+
 ### 2026-08-11 — Session 4 · Reasoning primary swapped again: Ollama Cloud `minimax-m3:cloud` (D13) · **documentation only**
 
 *`CLAUDE.md` §7 carries the short form of this entry; the long form lives here.*

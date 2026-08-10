@@ -548,6 +548,34 @@ widening the IAM policy. This does not block the Phase 0 exit gate (S3 is not
 in `P0-P1`/`P0-B1`/license), but it does block Phase 3 (invariant #11) and
 should be closed before then. Re-run `verify_s3.py` after the bucket exists.
 
+## 3.5 · S3 re-probe after bucket creation — run 2026-08-11, same day
+
+User created the bucket via the AWS console. Re-running the identical probe:
+
+```text
+PROBE A  auth — which identity, which region
+  Account : 532749777349
+  ARN     : arn:aws:iam::532749777349:user/engram-phase0
+  >> auth: OK
+
+PROBE B  put — s3://engram-agent-artifacts/phase0-probes/verify_s3-3e39fc45fe68.txt
+  An error occurred (AccessDenied) when calling the PutObject operation:
+  User: arn:aws:iam::532749777349:user/engram-phase0 is not authorized to
+  perform: s3:PutObject on resource:
+  "arn:aws:s3:::engram-agent-artifacts/phase0-probes/verify_s3-3e39fc45fe68.txt"
+  because no identity-based policy allows the s3:PutObject action
+  >> put: FAIL — AccessDenied
+
+GATE (auth + put + get/hash match): FAIL
+```
+
+**Result: one step further, still FAIL.** The bucket exists now (no more
+`NoSuchBucket`), but the IAM user has no `s3:PutObject`/`s3:GetObject` grant
+on it — bucket creation and IAM policy are two separate AWS actions, and only
+the first happened. **Still not a Phase 0 gate item.** Fix + diagnosis:
+`docs/blocked-register.md` §7 (attach a policy scoped to
+`arn:aws:s3:::engram-agent-artifacts/*` — never `s3:*`).
+
 ---
 
 ## 4 · P0-B2 — Managed MCP server limits  `[BRAINS]`

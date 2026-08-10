@@ -108,7 +108,7 @@ Invariant #2 pins the **dimension**; it cannot pin the **vector space**. Titan-1
 - SSE-S3 encryption, versioning on, lifecycle rule to expire demo artifacts.
 - Task-role policy grants `s3:PutObject` / `s3:GetObject` **scoped to that bucket ARN** — never `s3:*`, never `Resource: "*"`.
 - Serves invariant #11: rows store the `s3://` URI plus a content hash, never the blob. This is what protects the 10 GiB free-tier budget.
-- **Probed 2026-08-11** (`scripts/verify_s3.py`): the IAM identity (`arn:aws:iam::532749777349:user/engram-phase0`) authenticates correctly and, confirmed by direct test, **cannot** `s3:CreateBucket` — least-privilege is enforced exactly as intended. **But the bucket itself does not exist yet** — `PutObject` fails `NoSuchBucket`. Creating it is a manual AWS-console step (not a widened IAM policy); re-run the probe once it exists. Full transcript: `docs/phase0-verification.md` §3.4.
+- **Probed 2026-08-11** (`scripts/verify_s3.py`): the IAM identity (`arn:aws:iam::532749777349:user/engram-phase0`) authenticates correctly and, confirmed by direct test, **cannot** `s3:CreateBucket` — least-privilege is enforced exactly as intended. **Bucket created same day** (manual AWS-console step) — re-probing now gets one step further and fails differently: `AccessDenied` on `PutObject`, because the IAM user still has no `s3:PutObject`/`s3:GetObject` grant on it. Bucket creation and IAM policy are separate actions; only the first is done. Full transcript: `docs/phase0-verification.md` §3.4; diagnosis: `docs/blocked-register.md` §7.
 
 ---
 
