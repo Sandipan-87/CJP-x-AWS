@@ -1,213 +1,151 @@
 # CLAUDE.md — Engram Project Memory
 
-> **READ THIS FILE FIRST, BEFORE ANY OTHER ACTION IN A NEW SESSION.**
-> **UPDATE THE CHANGELOG AND THE `CURRENT POSITION` POINTER AS THE LAST ACTION OF EVERY SESSION.** Not optional. A session that produced code but no changelog entry is an unfinished session.
->
-> Detail lives elsewhere on purpose. Full rationale: `research/cockroachdb_aws_hackathon_strategy.md`. Day-by-day tasks: `execution_roadmap.md`. This file holds only what must never be re-derived.
+> **READ FIRST EVERY SESSION. UPDATE §6 + §7 AS THE LAST ACTION OF EVERY SESSION** — code without a changelog entry is an unfinished session.
+> No size cap on this file. Detail still lives in `docs/` for organization, **never to truncate** — completeness over brevity when the two conflict.
+> **Pointers — `docs/`:** `external-constraints.md` (measured limits — read before touching MCP, ccloud, Ollama, Cohere, S3) · `invariants.md` · `coding-conduct.md` · `roster.md` · `blocked-register.md` · `submission-checklist.md` · `phase0-verification.md` · `changelog-archive.md`. Also `research/cockroachdb_aws_hackathon_strategy.md` · `design/01-high-level-design.md` · `design/02-low-level-design.md` · `research/execution_roadmap.md` (**pre-pivot — §8 #6**).
+
+---
+
+## 0. Coding conduct — governs every code-generation turn
+
+From `multica-ai/andrej-karpathy-skills` (2026-08-10); **unabridged in `docs/coding-conduct.md`**. **Behavioural** rules about *how* I code; they never override §2–§9. **Conduct vs invariant → the invariant wins, out loud.** Bias: caution over speed; judgment on trivia.
+
+1. **Think before coding** — state assumptions, ask when uncertain, give multiple readings instead of picking silently, propose the simpler approach; **never hide confusion**.
+2. **Simplicity first** — minimum code, nothing speculative: no unasked features, single-use abstractions, config, or handling for impossible cases.
+3. **Surgical changes** — touch only what the request needs; match existing style; unrelated dead code is **mentioned, not deleted**; clean up only what you orphaned.
+4. **Goal-driven execution** — restate the task as `step → verify`, loop until verified. "Make it work" is not a success criterion.
+
+**Corollary:** invariants #4 and #6 **are** the simplest thing here — never swap them for application bookkeeping; never weaken the MCP allowlist or least-privilege IAM "for simplicity".
 
 ---
 
 ## 1. Project identity
 
-**Engram** — an autonomous database reliability engineer whose entire competence is its memory.
+**Engram** — an autonomous DB reliability engineer whose entire competence is its memory: it watches production CockroachDB clusters, diagnoses regressions, remediates behind human approval, measures the fix, and writes the outcome back as a scored, reusable procedure.
 
-It watches production CockroachDB clusters, diagnoses regressions, remediates behind human approval, measures whether the fix worked, and writes the outcome back as a scored, reusable procedure — so the next incident of that shape is solved in seconds.
+**Two demo beats (the product exists to produce these):** (1) **It remembers** — incident #2 in ~8 s vs #1's ~45 s, recalled procedure + similarity + confidence on screen. (2) **It survives** — `aws ecs stop-task` mid-remediation; a new task reclaims the lease, resumes from checkpoint, writes **one** action row where a naive agent writes two.
 
-**The sentence everything serves:**
-> Engram is the agent whose memory you can kill mid-task — it comes back, finishes the job without redoing it, and solves the next incident in seconds because it remembered the last one.
-
-**Two demo beats (the product exists to produce these):**
-1. **It remembers** — incident #2 resolved in ~8s vs #1's ~45s, with the recalled procedure, its similarity score, and its confidence visible on screen.
-2. **It survives** — `aws ecs stop-task` mid-remediation; new task reclaims the lease, resumes from checkpoint, produces **one** action row where a naive agent produces two.
-
-**Deadline: 2026-08-18 17:00 ET. Submit by 12:00 ET that day.** Hackathon: CockroachDB × AWS, five *equally weighted* criteria — Agentic Memory Design, Technological Implementation, Real-World Impact, Product Readiness, Creativity & Originality.
+**Deadline 2026-08-18 17:00 ET — submit by 12:00 ET.** CockroachDB × AWS; five *equally weighted* criteria, named in `docs/submission-checklist.md` §0.
 
 ---
 
 ## 2. Core architecture
 
 ```
-EventBridge (5min sweep / 1hr consolidate / nightly decay)
-        │
-        ▼  SQS engram-commands (durable trigger, FIFO by fingerprint)
-        ▼
-ECS Fargate ── LangGraph agent ── 5 nodes:
-  Observe → Recall → Reason → Gate → Act & Measure
-        │         │        │       │
-   Ollama      MCP(ro)  ccloud(ro)  CloudWatch
-   Cloud +                          + API GW/Lambda
-   embeddings                       (approvals, metrics)
-        │
-        ▼
-MEMORY CockroachDB cluster  ←── the product
-TARGET CockroachDB cluster  ←── the subject (MCP ro + probe/operator SQL roles)
-        +  S3 (artifacts) · Secrets Manager · IAM (4 identities)
+EventBridge (5m sweep · 1h consolidate · nightly decay) → SQS engram-commands
+(durable, FIFO by fingerprint) → ECS Fargate · LangGraph 5 nodes: Observe[MCP
+ro+SQL ro] → Recall[Cohere 1024-d] → Reason[Ollama Cloud] → Gate[ccloud ro+backup REST]
+→ Act & Measure[CloudWatch · API GW · Lambda].  MEMORY cluster = the product ·
+TARGET cluster = the subject (MCP ro + probe/operator SQL) · S3 · Secrets · IAM×4
 ```
 
-- **Agent core:** Python 3.12, LangGraph, `langchain-cockroachdb` (`AsyncCockroachDBSaver`), psycopg3 async pool, boto3, `mcp` client, httpx.
-- **Models — CHANGED 2026-08-03, see §7 Session 2 and design ADR-001/002:**
-  - **Reasoning: Ollama Cloud `minimax-m3:cloud`** via direct `POST https://ollama.com/api/chat`. Replaces Claude Sonnet 5 on Bedrock, which is unreachable (see §8). Never rely on a `message.thinking` channel — the tool-call schema carries a **required `reasoning` field** instead.
-  - **Embeddings: 1024 dims, provider UNRESOLVED.** Target is Bedrock Titan V2 (`amazon.titan-embed-text-v2:0`), but Bedrock invoke is blocked account-wide (§8). **This blocks Phase 2, not Phase 1.**
-  - **The embedding decision is one-way.** Invariant #2 pins the *dimension*; it cannot pin the *vector space*. Titan-1024 and any other 1024-dim model produce incomparable vectors, so mixing them in one index yields silently meaningless similarity scores. **Choose the embedding provider before seeding the corpus, or accept a full re-embed.** There is no fallback ladder for embeddings — unlike reasoning, where the `LLMProvider` ABC makes a swap a config change.
-- **Host:** ECS Fargate — chosen because the agent is long-lived *and* because `aws ecs stop-task` is the demo's kill switch.
-- **Lifecycle workers:** Lambda (consolidation, confidence decay, embedding backfill) — deliberately separate from the agent, because memory maintenance must survive agent death.
-- **Dashboard:** Next.js App Router + Tailwind + shadcn/ui on Vercel; SSE over a read-only SQL role.
-- **Two clusters, two roles.** Never conflate them. The memory cluster is what we are being judged on; the target cluster is the thing we operate on.
+**Stack:** Python 3.12 · LangGraph · `langchain-cockroachdb` (`AsyncCockroachDBSaver`) · psycopg3 async pool · **`boto3` — S3 only, no Bedrock client anywhere** · `cohere` SDK (or httpx) · `mcp` client. **Dashboard:** Next.js + Tailwind + shadcn/ui on Vercel; SSE over a read-only SQL role.
 
-**Not multi-agent, on purpose.** One agent, five graph nodes. Concurrency is handled by `FOR UPDATE` leases + fence tokens, not by agent-to-agent messaging. Do not add agents.
+- **Host: ECS Fargate** — the agent is long-lived *and* `aws ecs stop-task` is the demo kill switch. **Lifecycle workers run on Lambda** (consolidation, decay, backfill), separate on purpose: memory maintenance must survive agent death.
+- **Two clusters, two roles — never conflate them.** Memory is what we're judged on; target is what we operate on.
+- **Not multi-agent, on purpose.** Concurrency is leases + fence tokens, not agent messaging. **Do not add agents.**
 
----
+### 2.1 Providers — **PIVOTED 2026-08-10, supersedes 2026-08-03** · wire formats + unknowns in `docs/external-constraints.md` §3–§6
 
-## 3. Schema invariants — violating any of these breaks the submission
+**Bedrock is off every code path — removed, not routed around.**
 
-1. `SET CLUSTER SETTING feature.vector_index.enabled = true` is a prerequisite. **Seed rows BEFORE creating the vector index** — docs warn against large batch inserts into vector-indexed tables, and `IMPORT INTO` is unsupported on them.
-2. Embeddings are `VECTOR(1024)`. Index is `VECTOR INDEX (scope_id, embedding vector_cosine_ops) WITH (min_partition_size=16, max_partition_size=128)`. **Verified 2026-08-03.** Two corollaries learned the hard way: the C-SPANN index **does not serve plain `scope_id` predicates** — a non-ANN scoped lookup full-scans, so `memory_items` needs its own btree index on `(scope_id, status)` *as well*; and this invariant pins the **dimension only, never the vector space** (see §2).
-3. **Every ANN query must equality-constrain `scope_id`** (`=` or `IN`) and use `ORDER BY embedding <=> $1 LIMIT k`. Without the equality constraint the index is silently not used. This is the #1 way to ship a "vector search" that isn't one.
-4. `remediation_actions.idempotency_key` is `UNIQUE`. **That constraint — not application logic — is what makes double-apply impossible.** Never work around a uniqueness violation; interpret it as "already intended" and reconcile against reality.
-5. `agent_leases` acquisition takes a **row lock on `task_id`** and bumps a monotonic `fence_token`; stale holders are rejected at write time. *Wording amended 2026-08-03:* the LLD implements this as `UPDATE … WHERE task_id=$1 AND expires_at < now()` followed by `INSERT … ON CONFLICT DO NOTHING`, rather than a literal `SELECT … FOR UPDATE`. That satisfies the intent — the `UPDATE` takes the row lock, only an *expired* lease can be taken, and a live holder's token is never reset — and it removes a read-modify-write window. **The invariant is the row lock plus monotonicity, not the specific statement.**
-6. **Decision + intent-to-act + side-effect record commit in ONE transaction.** This is the entire thesis of the project expressed as a `BEGIN`/`COMMIT`. If you find yourself writing them separately, stop.
-7. Row-Level TTL: `working_memory` 7d, `observations` 30d, LangGraph checkpoint tables enabled. Forgetting is declared in DDL, not implemented as cron.
-8. `AS OF SYSTEM TIME` is reserved for belief-state replay (the audit feature). Do not use it as a performance trick.
-9. Retrieval is hybrid, never pure cosine: `0.45·similarity + 0.30·confidence + 0.15·recency + 0.10·entity_affinity`, hard-filtering `confidence < 0.15` and `status <> 'active'`.
-10. Confidence is a **Wilson lower bound** on `successes/attempts`, time-decayed. A 1/1 procedure must not outrank a 47/50 one.
-11. Large artifacts (EXPLAIN bundles, plan diffs) go to **S3**; the row holds URI + content hash. Protects the 10 GiB free-tier budget.
+- **Reasoning — Ollama Cloud `minimax-m3:cloud` (D13, 2026-08-11, supersedes D11's one-day Groq primary).** Ladder **Ollama Cloud → Groq → Together AI** behind the unchanged `LLMProvider` ABC — a rung change is **config, not code**; **no rung touches Bedrock**. Model tag + endpoint shape **UNVERIFIED** (detail in `external-constraints.md` §3) — probe via `scripts/verify_ollama.py` before the Day-4 freeze. `minimax-m3` is a thinking model: **never depend on a vendor "thinking" channel** — rationale lives in the tool schema's **required `reasoning` field**; stripping `<mm:think>` tags is load-bearing here, not defensive.
+- **Embeddings — Cohere `embed-english-v3.0`, natively exactly 1024-dim (RESOLVED 2026-08-10, pre-seed).** Invariant #2 holds with **no truncation, padding or projection**. **`input_type` is required** — `search_document` on write, `search_query` on recall; collapsing it degrades recall **silently**. **One-way and now spent:** 1024-dim spaces from different models are **incomparable**, so this **is** the space; changing it means a full re-embed. **No embeddings ladder**, by design.
+- **AWS anchor — S3 via `boto3`,** bucket **`engram-agent-artifacts`**: task logs, traces, EXPLAIN bundles, plan diffs. The AWS-service requirement now Bedrock is gone; load-bearing for invariant #11.
 
 ---
 
-## 4. External constraints — **measured 2026-08-03**, do not rediscover these the hard way
+## 3. Schema invariants — violating any breaks the submission · **rationale in `docs/invariants.md`**
 
-> Everything below marked "measured/verified" was run against the real services and is
-> logged in `docs/_raw/`. Three prior assumptions turned out **false** — they are called
-> out inline. Trust the measurements over the vendor docs, and over this file's history.
+Numbering is stable; a rule is never renumbered. Read `docs/invariants.md` before changing DDL.
 
-**Managed MCP Server** (`https://cockroachlabs.cloud/mcp`) — **MEASURED 2026-08-03**, `docs/_raw/p0-b2.log`
-- Server `cockroachdb-cloud 1.0.0`, protocol `2025-11-25`, connect+init ~1.3 s.
-- **Confirmed empirically:** 20 s query timeout (fired at **20.8 s**) · `SELECT` defaults to **exactly `LIMIT 25`** · **16,384-char** SQL limit (`query exceeds maximum length of 16384 characters`) · deny-list refuses with `query references a restricted schema: access to "X" is blocked for security reasons`.
-- **10 KiB ceiling: NOT verified.** No probe response exceeded 4,302 B (400 rows × 3 narrow columns), so the truncation boundary is unfound — budget as ~900–1,000 rows of that shape and assume it **truncates rather than errors** until proven.
-- `SHOW` 100-row cap: still untested.
-- **Tool parameter names are `{database, query}` — NOT `sql`.** An unrecognised property makes the server reply `must contain exactly one statement`, which reads like a refusal. This produced a false pass in the first verification run; do not repeat it.
-- **12 tools are exposed, not 9. `create_database`, `create_table`, `insert_rows` ARE callable** on our `mcp:read`-intended key. The earlier assumption that write tools are simply absent was **wrong**. Therefore `agent/tools/mcp_tool.py` must be a **deny-by-default allowlist** of the nine read tools — a passthrough is a prompt-injection hole. This is a *measured* entry for the blast-radius table.
-- **It is a control plane, not a data plane.** Hot-path memory reads go through psycopg3. MCP is for introspection, self-diagnosis, and human interrogation.
-- Read tools (the allowlist): `list_clusters`, `get_cluster`, `list_databases`, `list_tables`, `get_table_schema`, `select_query`, `explain_query`, `show_statement`, `show_running_queries`.
-- `show_statement` and `get_table_schema` **do** report vector indexes correctly (they were our P0-P1 artifact path); `explain_query` works and returns CockroachDB's *index recommendations* section, which is the pre-gate falsification signal.
-- Auth: service-account API key as `Authorization: Bearer`, pinned with the `mcp-cluster-id` header. Scope `mcp:read`, role Cluster Operator.
-
-**ccloud CLI** — verified against **ccloud 0.6.12**, 2026-08-03
-- `-o json` is global. Error codes distinguish permission-denied / not-found / rate-limited.
-- Service account holds **Cluster Operator (read-only)** only.
-- `ccloud cluster disruption` is **Advanced-tier only** — unusable on our free Basic cluster. Do not build the resilience demo on it; we kill the agent, not the database.
-- **`ccloud cluster backup list` DOES NOT EXIST.** Available `cluster` subcommands are only: `list, info, create, delete, sql, update, regions, nodes, networking, user`. The pre-flight backup gate (P3-P3) must use the **Cloud REST API** instead:
-  `GET https://cockroachlabs.cloud/api/v1/clusters/{id}/backups` → `200 {"backups": [...]}` — verified working on a **Basic** cluster (`fixtures/cloudapi-backups-basic.json`).
-  - Requires a service-account role with backup read (**Cluster Admin**, not Cluster Operator) **scoped to the target cluster** — our current key returns `403 unauthorized` for the target and `200` for the memory cluster.
-  - On a fresh Basic cluster the list is **empty**, so the gate's default is **refuse**. That is the demo beat we want; do not claim the allow-path was tested unless it was.
-- Used: `cluster info`/`list` (entity memory), `audit list` (reconciliation).
-- `cluster list` reports `plan: "SERVERLESS"` while the REST API reports `plan: "BASIC"` for the same cluster. Adapters must tolerate both.
-- The model **never emits a command string.** It selects from an allowlisted enum; the adapter builds `argv`.
-
-**Ollama Cloud** (`https://ollama.com`) — reasoning provider as of 2026-08-03
-- `POST /api/chat`, `Authorization: Bearer $OLLAMA_API_KEY`, `stream: false`, tools as JSON schema.
-- **`message.thinking` is never returned** by `minimax-m3:cloud`, and `<mm:think>` tags can leak into `content`. The adapter strips them before JSON parsing; audit rationale lives in the schema's required `reasoning` field.
-- **Unverified until `scripts/verify_ollama.py` runs:** the model id, its availability on the Cloud tier, rate limits, latency against the 8 s demo budget, and multi-turn tool-result handling. The benchmark figures quoted in the design docs are vendor claims, not measurements of ours.
-- Free tier is demo-only; budget Pro from Day 1. Circuit breaker parks the agent after N consecutive failures.
-
-**Free tier:** 50M RU + 10 GiB/month per org. No changefeeds (RU cost) — SSE + cursor instead. No per-panel polling.
-
-**Devpost rules:** repo public with **Apache-2.0 `LICENSE` in the first commit** (must show in GitHub's About sidebar); project must be newly created during the submission period (commit graph is the evidence); demo URL must be free to test *without our credentials*; video < 3 min, public, must show the memory layer at work.
+1. `feature.vector_index.enabled = true` first. **Seed rows BEFORE creating the vector index** (`IMPORT INTO` is unsupported on one).
+2. `VECTOR(1024)`; `VECTOR INDEX (scope_id, embedding vector_cosine_ops) WITH (min_partition_size=16, max_partition_size=128)` — **verified 2026-08-03**. C-SPANN **does not serve plain `scope_id` predicates**, so `memory_items` also needs a btree index on `(scope_id, status)`. Pins the **dimension only, never the vector space** (§2.1).
+3. **Every ANN query equality-constrains `scope_id`** (`=`/`IN`) and uses `ORDER BY embedding <=> $1 LIMIT k`. Without it the index is silently unused.
+4. `remediation_actions.idempotency_key UNIQUE` **is** the exactly-once guarantee — not application logic. Never work around a uniqueness violation; reconcile against reality.
+5. `agent_leases` acquisition takes a **row lock on `task_id`** and bumps a monotonic `fence_token`; stale holders rejected at write time. **The invariant is the row lock plus monotonicity, not the statement.**
+6. **Decision + intent-to-act + side-effect record commit in ONE transaction.** Writing them separately? Stop.
+7. Row-Level TTL: `working_memory` 7d, `observations` 30d, `tasks` 90d, checkpoint tables on. **Every FK to a TTL'd parent needs an explicit `ON DELETE` action** or the TTL job errors silently.
+8. `AS OF SYSTEM TIME` is reserved for belief-state replay. Not a performance trick.
+9. Retrieval is hybrid, never pure cosine: `0.45·similarity + 0.30·confidence + 0.15·recency + 0.10·entity_affinity`; hard-filter `confidence < 0.15`, `status <> 'active'`.
+10. Confidence is a time-decayed **Wilson lower bound**. A 1/1 procedure must not outrank a 47/50 one.
+11. Large artifacts go to **S3 `engram-agent-artifacts`**; the row holds URI + content hash.
 
 ---
 
-## 5. Subagent roster
+## 4. External constraints — rules here, **evidence in `docs/external-constraints.md`**
 
-Every code-generation turn states which role is executing. Roles are domain boundaries — do not cross them without a changelog note.
+Trust measurements over vendor docs and over this file's history. **Verification targets: Cohere (1024-dim) and S3 (put/get/hash) — no longer Bedrock.**
 
-| Role | Domain | Invariants it owns |
-|---|---|---|
-| **[BRAINS]** Agent Core & AI | Python, LangGraph, Bedrock, EventBridge, langchain-cockroachdb | The 5-node loop; strict JSON tool schemas (no free-form LLM output reaching a tool); `AsyncCockroachDBSaver` checkpointing; graceful Bedrock throttling + MCP timeout handling |
-| **[PLUMBER]** Distributed Data & Infra | CockroachDB/psycopg3, SQL DDL, ccloud, IAM, Secrets Manager | ACID transaction boundaries; `FOR UPDATE` leases + fence tokens; `vector_cosine_ops` index; Row-Level TTL; least-privilege IAM; **kill-and-resume correctness at the DB level** |
-| **[ILLUSIONIST]** Frontend & Telemetry | Next.js App Router, Tailwind, shadcn/ui, CloudWatch | Memory Inspector (similarity + confidence + provenance visible); SSE not polling (RU discipline); CloudWatch metrics `recall_hit_rate`, `time_to_remediation`, `memory_recall_latency_p99`, `blocked_by_backup_gate`, `exactly_once_conflicts_detected` |
+- **MCP is a control plane, not a data plane** — hot-path reads use psycopg3. MEASURED: 20 s timeout · `SELECT` defaults to **exactly `LIMIT 25`** · 16,384-char SQL cap · params **`{database, query}`, NOT `sql`** · **12 tools, 3 of them writes**, so the adapter is a **deny-by-default allowlist of 9 read tools** — a passthrough is a prompt-injection hole.
+- **ccloud 0.6.12:** `cluster disruption` is Advanced-only, so **we kill the agent, not the database**. **`cluster backup list` does not exist** — the backup gate uses the Cloud REST API with **Cluster Admin scoped to the target**. Fresh Basic returns an **empty** list, so the gate defaults to **refuse** — that's the demo beat; never claim the allow-path was tested unless it was. **The model never emits a command string**; it picks from an allowlisted enum and the adapter builds `argv`.
+- **Ollama Cloud / Cohere claims are vendor-documented, UNVERIFIED** until probed. Free tiers are demo-grade — budget paid before rehearsal.
+- **Free tier:** 50M RU + 10 GiB/month per org. **No changefeeds** (RU cost) — SSE + cursor, never per-panel polling.
+- **Devpost:** the repo / licence / demo-URL / video gates are **§9** — one copy of that rule set, there.
 
-**Frozen interface contracts** (changing one after its freeze date requires a changelog entry):
+---
 
-| Contract | Owner | Freeze | Consumers |
-|---|---|---|---|
-| SQL schema + migrations | [PLUMBER] | Day 3 | all |
-| Tool-call JSON schemas | [BRAINS] | Day 4 | [PLUMBER] adapters |
-| Read-only SSE query surface | [PLUMBER] + [ILLUSIONIST] | Day 5 | dashboard |
+## 5. Subagent roster — **ownership detail in `docs/roster.md`**
+
+Every code-generation turn states which role is executing. Roles are domain boundaries — don't cross one without a changelog note.
+
+- **[BRAINS]** — Python, LangGraph, Ollama/Groq/Together, Cohere, EventBridge. **No free-form LLM output reaches a tool.**
+- **[PLUMBER]** — CockroachDB/psycopg3, SQL DDL, ccloud, IAM, Secrets, S3. **Kill-and-resume correctness at the DB level.**
+- **[ILLUSIONIST]** — Next.js, Tailwind, shadcn/ui, CloudWatch. Memory Inspector (similarity + confidence + provenance visible); SSE not polling; the five demo metrics.
+
+**Frozen contracts** (changing one post-freeze needs a changelog entry): SQL schema + migrations — [PLUMBER], Day 3 · tool-call JSON schemas — [BRAINS], Day 4 · read-only SSE surface — [PLUMBER] + [ILLUSIONIST], Day 5.
 
 ---
 
 ## 6. CURRENT POSITION
 
 ```
-PHASE:    0 — Hour One  →  closing out (5 of 6 tasks PASS)
-DATE:     2026-08-03 (Day 3 of 17)
-DONE:     P0-P1 ✅ vector index proven (4 confirmations + self-validating probe)
-          P0-P2 ✅ both Basic clusters live, v26.2.1
-          P0-P3 ✅ backup signal — via Cloud REST API, NOT ccloud (§4)
-          P0-B2 ✅ MCP limits measured (§4)
-OPEN:     P0-B1 ❌ Bedrock invoke blocked ACCOUNT-WIDE  → reasoning moved to
-                    Ollama Cloud; EMBEDDINGS STILL BLOCKED (see §8 #2)
-          P0-I1 ⬜ repo + Apache-2.0 LICENSE — NOT done despite design §1
-                    claiming otherwise. One commit exists with NO LICENSE.
-BLOCKING: two, ranked:
-          1. LICENSE-in-first-commit — Devpost hard requirement, and the
-             first commit already exists. Amend it before adding a remote.
-          2. Local egress on TCP 26257 (squid proxy) — blocks ALL of Phase 1
-             (kill-and-resume cannot be driven from a browser SQL shell).
-          Bedrock is NOT the critical path; it has ~3 days of slack.
+PHASE 0 — 4 of 6 PASS.  2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
+⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code is 0.
+DONE  P0-P1 vector index · P0-P2 both clusters v26.2.1 · P0-P3 backup signal via
+      Cloud REST, NOT ccloud · P0-B2 MCP limits · all docs on Ollama+Cohere+S3.
+OPEN  P0-B1 live Ollama Cloud + Cohere probe · real provider API keys (Ollama,
+      Cohere, AWS) not yet issued.
+BLOCKING  (1) TCP 26257 blocked by squid — blocks ALL of Phase 1. (2) Time.
+RESOLVED THIS SESSION  P0-I1 LICENSE — Apache-2.0 added as a normal commit,
+      pushed; About-sidebar detection needs the file present now, not in the
+      first commit (that conflated two separate Devpost rules — §8 #4).
 ```
 
-**Next action, in order:** (1) `LICENSE` into the amended first commit; (2) unblock 26257; (3) `scripts/verify_ollama.py` to close P0-B1's reasoning half; (4) begin P1-P1 migrations — pure SQL authoring, needs no cluster connection to write.
-
-**Decision deadline — 2026-08-05 (Day 5):** if Bedrock invoke still fails, commit to a non-Bedrock 1024-dim embedder *before any corpus is seeded* (see §2 — the choice is one-way).
+**Next action, in order:** (1) unblock 26257 (other network / admin request / EC2); (2) obtain real Ollama Cloud + Cohere + AWS keys, then run `scripts/verify_ollama.py` (probes A–F, already written) — confirm model tag + endpoint shape, then Cohere — assert 1024 dims, record latency (LLD T9a/T9b/T9c); (3) P1-P1 migrations from the LLD §6.2 fixed-state DDL — pure SQL, no cluster needed.
 
 ---
 
 ## 7. Changelog
 
-Reverse-chronological. One entry per session. Never delete entries.
+One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
 
-### 2026-08-03 — Session 2 · Phase 0 executed · reasoning provider swapped
-- **Built:** `db/phase0_vector_probe.sql` + `db/console/*.sql` (14 console-pasteable chunks, needed because local 26257 is proxy-blocked) · `scripts/verify_mcp.py` (8 probes) · `scripts/verify_bedrock.py` · `scripts/run_sql.py` (psycopg3 runner) · `scripts/requirements-verify.txt` · `docs/phase0-verification.md` (the evidence record) · `.env`/`.env.example` · `.gitignore` · fixtures from the Cloud REST API. Reviewed `design/01-high-level-design.md` + `design/02-low-level-design.md`.
-- **Verified working:** **P0-P1 PASSES** — `VECTOR INDEX (scope_id, embedding vector_cosine_ops)` on free Basic v26.2.1; plan shows a `vector search` operator on `vec_probe_scope_cos` with `prefix spans` on `scope_id`, reads **11 of 400 rows**, **6 ms / 5.576 RU**; probe vector was built to equal row 200's embedding, so recovering `id=200` at distance `2.39e-07` is self-validating. Negative control (no `scope_id` predicate) correctly shows `FULL SCAN`. P0-P2, P0-P3, P0-B2 also pass (see §4 for measured limits).
-- **Currently broken:** Bedrock invoke blocked account-wide (§8 #1) → **embeddings have no provider** (§8 #2). Local TCP 26257 blocked by a squid proxy (§8 #3). `LICENSE` absent from the existing first commit (§8 #4).
-- **Decisions locked:** reasoning → **Ollama Cloud `minimax-m3:cloud`** (ADR-001), no dependence on a thinking channel · embeddings stay 1024-dim and the provider choice is **one-way, pre-seed** · backup gate → **Cloud REST API**, not ccloud · MCP adapter → **deny-by-default allowlist** because write tools are exposed.
-- **Corrections to prior belief:** `ccloud cluster backup list` does not exist · MCP exposes 3 write tools · MCP params are `{database, query}` not `{sql}` · C-SPANN does **not** serve plain `scope_id` predicates, so `memory_items` needs its own btree index · two claims about CockroachDB introspection were made and retracted (see `docs/phase0-verification.md` §1.2 — the console `Internal error` was real but unreproduced; there is **no** omission defect).
-- **Next action:** LICENSE into an amended first commit; unblock 26257; `verify_ollama.py`; P1-P1 migrations.
+**2026-08-11 — Session 5 · Doc-budget cap removed, repo cleanup, LICENSE pushed, env/deps automated.** Removed the 14 KB cap + hook enforcement on this file (§ header) — no content was cut to reach it. Deleted `research/prompt.md` (superseded work-order, content fully absorbed into the strategy doc) and `scripts/__pycache__` (bytecode cache); `.gitignore` already keeps `db/`, `fixtures/`, `*.log` out of git, so no secrets were ever at risk there. **Discovered the repo was already public at `github.com/Sandipan-87/CJP-x-AWS` with no LICENSE and 7 of the D13-pivot doc files still uncommitted** — §8 #4's "amend the root commit" plan conflated the About-sidebar LICENSE rule with the separate first-commit-date rule; the hackathon text requires only that the file be **currently** visible, so it was added as a normal commit instead of a history rewrite. Committed and pushed: LICENSE, the full D13 doc sweep, this session's cleanup. `.env` restructured to the D13 key set (real DSNs/tokens preserved, `COHERE_API_KEY`/`GROQ_API_KEY`/`TOGETHER_API_KEY` added empty); `scripts/requirements-verify.txt`'s stale Bedrock comment fixed. Ran `scripts/verify_ollama.py` — failed on missing `OLLAMA_API_KEY` (expected, real key not yet issued); logged for §8. *Long form: `docs/changelog-archive.md`.*
 
-### 2026-08-01 — Session 1 · Orchestration setup
-- **Built:** `research/cockroachdb_aws_hackathon_strategy.md` (full strategy, 25 sections, research-verified). `CLAUDE.md` (this file). `execution_roadmap.md` (4-phase, 17-day plan with role ownership).
-- **Verified working:** nothing executable yet — documents only.
-- **Currently broken:** nothing built yet.
-- **Decisions locked:** Engram over 23 alternatives · single agent, not multi-agent · Fargate over AgentCore Runtime (schedule risk; `stop-task` is the demo) · kill the agent, not the database (`cluster disruption` is Advanced-only) · no changefeeds (RU cost) · Apache-2.0.
-- **Next action:** Phase 0 verification (vector index setting + Bedrock model access).
+**2026-08-11 — Session 4 · Reasoning primary swapped again: Ollama Cloud `minimax-m3:cloud` (D13) · documentation only.** D11's one-day Groq primary **superseded**; ADR-001 reinstated in substance. Ladder now **Ollama Cloud → Groq → Together AI**, same ABC, no Bedrock rung. Why: `verify_ollama.py` exists, `verify_groq.py` never was. New risk: `<mm:think>` leakage is now primary-path — tag-stripping is load-bearing. Model tag + endpoint shape **UNVERIFIED**, gates Day-4 freeze. **Swept:** CLAUDE.md, both design docs, `.env.example`. *Long form + Session 3: `docs/changelog-archive.md`.*
 
 ---
 
-## 8. Broken / blocked register
+## 8. Broken / blocked register — status here, **diagnoses in `docs/blocked-register.md`**
 
-Standing table so failures survive across sessions instead of being re-diagnosed. Remove a row only when it is genuinely fixed.
+**Remove a row only when genuinely fixed — de-scoped is not fixed.**
 
-| # | Symptom | Suspected cause | Owner | Status |
-|---|---|---|---|---|
-| 1 | Every Bedrock `InvokeModel`/`Converse` → `ValidationException: Operation not allowed`. Affects `claude-sonnet-5`, `us.`/`global.` profiles, **and** `claude-3-haiku` (ON_DEMAND, no form) **and** `amazon.titan-embed-text-v1/v2` (Amazon first-party). IAM is fine — `ListFoundationModels` returns 119 models, and IAM denials return `AccessDeniedException`, a different class. | **Account-level**, not model approval. New AWS account still completing activation / payment verification. Ticket belongs under *Account and billing → Activation*. | [BRAINS] | OPEN — reasoning routed around it (Ollama); embeddings still blocked. Decision deadline Day 5. |
-| 2 | **Embeddings have no working provider.** The Ollama swap fixes reasoning only; the design still routes embeddings to Bedrock Titan, which is inside blocker #1. Design HLD §14 rates this risk "L / one-click enable" — **empirically wrong.** | Same as #1. | [PLUMBER] | OPEN — **blocks P2-P1 and therefore all of Phase 2.** Candidate 1024-dim substitutes: `mxbai-embed-large`, `bge-large-en-v1.5`, `qwen3-embedding:0.6b`. Must be chosen **before** seeding (§2). |
-| 3 | psycopg3/`cockroach sql` to either cluster on :26257 → `received invalid response to SSL negotiation: H`. Raw probe returns `HTTP/1.1 403 Forbidden / Server: squid/4.13`. Ports 22 and 443 are open; no `*_PROXY` vars set. | Transparent Squid proxy with a port allowlist that omits 26257. Network-side, not ours. | [PLUMBER] | OPEN — **blocks all of Phase 1.** Phase 0 was completed via the Console SQL Shell + MCP over 443. Fix: different network, admin request, or move the dev loop onto EC2. |
-| 4 | `LICENSE` does not exist, but a first commit already does (`4304008`). Devpost requires Apache-2.0 **in the first commit**, detectable in the About sidebar. HLD §1 claims "already done". | Design doc written ahead of execution. | [ILLUSIONIST] | OPEN — amend the root commit **before** adding a remote; trivial now, history rewrite later. |
-| 5 | `design/03-adr.md` and `design/architecture.svg` are cited by both design docs (ADR-001…008) but do not exist. | Companion artifacts not yet written. | [BRAINS] | OPEN — decisions are captured inline in HLD §3 for now. |
+1. **Bedrock invoke blocked account-wide** (account activation, not IAM). [BRAINS] **DE-SCOPED — still broken, no longer blocking.** **Do not re-introduce a Bedrock dependency to "use more AWS"** — S3 is the anchor.
+2. **Embeddings had no provider** (row 1). [PLUMBER] **RESOLVED — Cohere, native 1024-dim, pre-seed**, so no re-embed owed. Needs a probe, not a decision.
+3. **:26257 blocked** by a transparent squid proxy (`403`), network-side. [PLUMBER] **OPEN — blocks all of Phase 1.** Phase 0 ran via Console SQL Shell + MCP over 443. Fix: other network, admin ask, or EC2.
+4. **First commit `4304008` has no `LICENSE`.** [ILLUSIONIST] **RESOLVED 2026-08-11 — added as a normal commit, pushed.** The "amend the root commit" plan conflated two Devpost rules; only the About-sidebar visibility rule governs LICENSE placement, and a remote already existed by the time this was checked.
+5. **`design/03-adr.md` + `architecture.svg` cited but absent.** [BRAINS] OPEN — decisions inline in HLD §3; **ADR-001/002 superseded by §2.1**.
+6. **`research/execution_roadmap.md` is pre-pivot** — Bedrock/Titan tasks stale (and it was mis-recorded here as missing until 2026-08-10). [BRAINS] OPEN — retarget before planning a day off it.
 
 ---
 
-## 9. Definition of done — the submission checklist
+## 9. Definition of done — **full wording in `docs/submission-checklist.md`**
 
-- [ ] Public repo, **Apache-2.0 `LICENSE` detectable in GitHub About sidebar**, first commit dated after 2026-06-30
-      — ⚠️ **AT RISK:** commit `4304008` already exists with no `LICENSE`. Amend the root commit *before* adding a remote; after a push this becomes a history rewrite.
-- [ ] Written statement: which **AWS** services and how — note that moving reasoning off Bedrock removes the flagship AWS AI service. Remaining: ECS Fargate (load-bearing — `stop-task` is the demo), Lambda, EventBridge, SQS, API Gateway, S3, Secrets Manager, CloudWatch, IAM. **Say this plainly rather than implying Bedrock does the reasoning.**
-- [ ] README: quickstart, architecture diagram, four-identity + blast-radius tables, measured numbers (recall latency, beam-size trade-off, MTTR before/after), falsifiability paragraph
-- [ ] **Functional demo URL, testable by a stranger with no credentials**, alive through judging
-- [ ] Video < 3 min, public on YouTube/Vimeo, memory layer visibly on screen for most of the runtime
-- [ ] Written statement: which CockroachDB tools + **what the agent actually did with them** (draft in strategy §14.5)
-- [ ] Written statement: which AWS services and how
-- [ ] Optional but do it: architecture diagram + tool feedback (strategy §21)
+- [x] Public repo, **Apache-2.0 `LICENSE` in the About sidebar** (§8 #4) · first commit `4304008` dated after 2026-06-30.
+- [ ] AWS statement: **no Bedrock, said plainly** — Ollama Cloud + Cohere do the AI; AWS gives runtime + durability (the nine services in `docs/submission-checklist.md` §2; Fargate's `stop-task` *is* the resilience demo). **Never imply Bedrock reasons.**
+- [ ] CockroachDB-tools statement: which tools + **what the agent did with them**.
+- [ ] README: quickstart · diagram · four-identity + blast-radius tables · measured numbers · falsifiability paragraph.
+- [ ] **Demo URL testable by a stranger with no credentials**, alive through judging · video < 3 min, public, memory layer on screen most of it.
+- [ ] Optional but do it: architecture diagram + tool feedback.
 
 **Never cut, whatever slips:** kill-and-resume · the backup gate refusal · the two-incident contrast · the license · the guest-accessible demo URL.
