@@ -121,8 +121,12 @@ class Database:
             dsn = f"{dsn}{sep}sslrootcert={sslrootcert}"
 
         async def configure(conn: psycopg.AsyncConnection) -> None:
+            # Measured 2026-08-11: leaving this uncommitted parks the connection in
+            # INTRANS, which the pool's own health check then discards as invalid —
+            # pool.open() never completes, just times out with no clearer error.
             async with conn.cursor() as cur:
                 await cur.execute(f"SET statement_timeout = {statement_timeout_ms}")
+            await conn.commit()
 
         pool = AsyncConnectionPool(
             dsn,
@@ -199,6 +203,10 @@ class Database:
                 row = await cur.fetchone()
                 return str(row["task_id"])
             except psycopg.errors.UniqueViolation:
+                # Measured 2026-08-11: a caught error leaves the transaction
+                # ABORTED — the next statement on the same connection fails
+                # InFailedSqlTransaction unless rolled back first.
+                await cur.connection.rollback()
                 await cur.execute(
                     """
                     SELECT task_id FROM tasks
@@ -536,6 +544,7 @@ class Database:
                 row = await cur.fetchone()
                 return str(row["action_id"])
             except psycopg.errors.UniqueViolation:
+                await cur.connection.rollback()  # see insert_task's identical fix, same cause
                 await cur.execute(
                     "SELECT action_id FROM remediation_actions WHERE idempotency_key = %s",
                     (idempotency_key,),
@@ -654,23 +663,34 @@ class Database:
     async def audit_replay(self, task_id: str, as_of_ts: str) -> dict[str, list[dict]]:
         """Invariant #8: belief-state replay. §6.7's injection-safe pattern —
         validate first, only then interpolate the now-trusted literal.
+
+        Measured 2026-08-11: putting a separate `AS OF SYSTEM TIME` clause on
+        each of the three SELECTs raised `FeatureNotSupported: inconsistent
+        AS OF SYSTEM TIME timestamp` on a pooled connection reused across
+        statements — CockroachDB's own hint pointed at the actual fix: pin
+        the timestamp ONCE for the whole transaction via `SET TRANSACTION AS
+        OF SYSTEM TIME`, then run plain reads inside it.
         """
         validated = _validate_as_of(as_of_ts)
-        decisions = await self._read(
-            f"SELECT * FROM decisions AS OF SYSTEM TIME '{validated}' "
-            f"WHERE task_id = %s ORDER BY created_at",
-            (task_id,),
-        )
-        tool_calls = await self._read(
-            f"SELECT * FROM tool_calls AS OF SYSTEM TIME '{validated}' "
-            f"WHERE task_id = %s ORDER BY started_at",
-            (task_id,),
-        )
-        working_memory = await self._read(
-            f"SELECT * FROM working_memory AS OF SYSTEM TIME '{validated}' "
-            f"WHERE task_id = %s",
-            (task_id,),
-        )
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                async with conn.transaction():
+                    await cur.execute(f"SET TRANSACTION AS OF SYSTEM TIME '{validated}'")
+                    await cur.execute(
+                        "SELECT * FROM decisions WHERE task_id = %s ORDER BY created_at",
+                        (task_id,),
+                    )
+                    decisions = await cur.fetchall()
+                    await cur.execute(
+                        "SELECT * FROM tool_calls WHERE task_id = %s ORDER BY started_at",
+                        (task_id,),
+                    )
+                    tool_calls = await cur.fetchall()
+                    await cur.execute(
+                        "SELECT * FROM working_memory WHERE task_id = %s",
+                        (task_id,),
+                    )
+                    working_memory = await cur.fetchall()
         return {
             "decisions": decisions,
             "tool_calls": tool_calls,

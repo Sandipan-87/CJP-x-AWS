@@ -222,6 +222,11 @@ async def main(sslrootcert: str | None) -> int:
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        # psycopg's async mode cannot run on Windows' default ProactorEventLoop
+        # (raises at pool-open time, not import time) — local-dev-only quirk,
+        # the GitHub Actions runner (Linux) never hits this.
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     ap = argparse.ArgumentParser()
     ap.add_argument("--sslrootcert", default=None,
                      help="path to the cluster CA cert (see scripts/run_sql.py --sslrootcert)")

@@ -106,31 +106,38 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS (P0-P1 + P0-B1 both legs + license, see archived
       block below) · P1-P1 migrations 001-004 written, **001 + 002 APPLIED to
-      the live memory cluster, 2026-08-11** — tables/indexes/views/roles/
-      grants all exist for real · 26257 local block worked around via
-      `.github/workflows/db-migrate.yml` · **`agent/memory/db.py` written**
-      (LLD §6.1) — the async pool + all 22 DAO methods from the §6.1 table
-      (27 public methods incl. connect/close/3 dashboard_* wrappers), plus
-      `agent/errors.py` (StaleLeaseError) and `requirements.txt` (first
-      runtime deps). Import/compile-checked locally; a real-cluster smoke
-      test (`scripts/smoke_test_db.py` + `db-smoke-test.yml`) is WRITTEN but
-      not yet run — next action.
+      the live memory cluster** · **`agent/memory/db.py` WRITTEN AND VERIFIED
+      LIVE, 2026-08-11** — user connected via VPN (local squid block bypassed
+      client-side), smoke test ran against the real memory cluster: **29/29
+      checks PASS** (`scripts/smoke_test_db.py`) after 3 real bugs surfaced
+      and were fixed (Windows event-loop policy; an uncommitted `configure`
+      callback parking every pooled connection in `INTRANS`; a caught
+      `UniqueViolation` leaving the txn aborted for the recovery `SELECT`;
+      `audit_replay`'s per-statement `AS OF SYSTEM TIME` raised
+      `FeatureNotSupported: inconsistent timestamp` on a reused pooled
+      connection — fixed to CockroachDB's own suggested `SET TRANSACTION AS
+      OF SYSTEM TIME` pattern). This is now measured working code, not just
+      import-checked. `agent/errors.py` + `requirements.txt` also land.
 OPEN (non-gating)  003 (vector index) and 004 (checkpoint TTL) NOT YET
       applied — both have real prerequisites (seed corpus; `saver.setup()`)
       that haven't happened yet, so this is correct sequencing, not a gap.
       S3 bucket `engram-agent-artifacts` does not exist yet — IAM auth
       verified, `s3:CreateBucket` correctly denied, bucket needs a manual
-      console step (§8 row 7).
-BLOCKING  Time. (26257 no longer blocks — see DONE.)
+      console step (§8 row 7). 26257 is open right now only because of the
+      user's VPN — treat it as still blocked by default, not fixed.
+BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
+      unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) run `db-smoke-test.yml` against the live memory cluster to actually verify `agent/memory/db.py` (import/compile-checked only so far); (2) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7); (3) `agent/memory/leases.py` (retry/backoff/jitter policy wrapping `db.py`'s single-attempt lease methods) or `agent/memory/recall.py` (the only ANN call site) — whichever the demo path needs first; (4) migrations 003/004 once their prerequisites (seed corpus; LangGraph `saver.setup()`) are in place.
+**Next action, in order:** (1) `agent/memory/leases.py` (retry/backoff/jitter policy wrapping `db.py`'s single-attempt lease methods) or `agent/memory/recall.py` (the only ANN call site) — whichever the demo path needs first; (2) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7); (3) migrations 003/004 once their prerequisites (seed corpus; LangGraph `saver.setup()`) are in place.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 13 · VPN opened local 26257; `agent/memory/db.py` verified LIVE, 3 real bugs found and fixed.** User connected via VPN — confirmed by a raw TCP `socket.create_connection` to the memory cluster's :26257 succeeding locally, where it failed all of Sessions 9-12. Fetched the cluster's CA cert locally (same public endpoint as the GitHub Actions workflows) and ran `scripts/smoke_test_db.py` directly against the live cluster instead of round-tripping through Actions. **First run failed 3 times in a row, each a real, previously-invisible bug — none were shipped:** (1) `psycopg` async cannot use Windows' default `ProactorEventLoop` — fixed by setting `WindowsSelectorEventLoopPolicy` in the script's entrypoint (Linux runners never hit this, so `db-smoke-test.yml` didn't need the fix, only local Windows dev does); (2) `Database.connect()`'s pool `configure` callback executed `SET statement_timeout` but never committed, leaving every new pooled connection parked `INTRANS`, silently discarded by the pool's health check — `pool.open()` timed out with no clue why until traced; fixed with an explicit `await conn.commit()` in `configure`; (3) both idempotent-insert methods (`insert_task`'s incident dedupe, `insert_remediation_action`'s exactly-once path) caught `UniqueViolation` and immediately ran a recovery `SELECT` on the same cursor — but a caught error leaves a CockroachDB transaction aborted, so the `SELECT` itself failed `InFailedSqlTransaction`; fixed with `await cur.connection.rollback()` before the recovery query in both places. Even after those three, `audit_replay` still failed: putting a separate `AS OF SYSTEM TIME` clause on each of 3 SELECTs raised `FeatureNotSupported: inconsistent AS OF SYSTEM TIME timestamp` on a reused pooled connection — CockroachDB's own error HINT named the fix (`SET TRANSACTION AS OF SYSTEM TIME`), so `audit_replay` was rewritten to pin the timestamp once per transaction and run plain reads inside it, matching CockroachDB's documented multi-statement AOST pattern instead of repeating the clause. **Result: 29/29 checks pass against the real memory cluster** — every DAO method, the lease acquire/renew/stale-fence/takeover/release sequence (including a simulated `stop-task` reclaim), the idempotency paths, and belief-state replay are now measured working, not just import-checked. Test data cleaned up via `ON DELETE CASCADE` from its own disposable `scope_id`/`task_id`, confirmed nothing left behind. **Not a fix to the network block itself** — the squid proxy is unchanged; the VPN is this session's convenience, not a standing state, so `CLAUDE.md` §8 row 3 says so explicitly rather than implying 26257 is generally open now.
 
 **2026-08-11 — Session 12 · Migrations 001+002 confirmed applied live; wrote `agent/memory/db.py` — first application code.** User re-ran `db-migrate.yml` with Session 11's fix and both `001_engram_schema.sql` and `002_grants.sql` applied successfully to the live memory cluster — the SSL chain (Sessions 10→11) is closed, not just theorized. Wrote `agent/memory/db.py` (LLD §6.1): async pool (`AsyncConnectionPool`, pool size 5, statement_timeout 30s, per §6.1's numbers) plus all 22 DAO methods from the §6.1 table (27 public methods counting `connect`/`close`/the three `dashboard_*` view wrappers). **Judgment calls made explicit in the module docstring, not hidden:** (1) write-time fencing (§6.4's "every mutating DAO call accepts holder_id+fence_token") is implemented only for the lease methods themselves — LLD's own note offers "...or the caller verifies lease before write" as the alternative, and threading fence params through all 20 other methods was deferred to whatever calls them, keeping db.py a flat DAO layer; (2) `acquire_lease`/`takeover_lease` share one implementation — §6.4's SQL is a single transaction, not two; (3) no retry/backoff/jitter loop lives here — that's `agent/memory/leases.py`'s job, not yet written; db.py's lease methods are single-attempt primitives. **Two real bugs caught and fixed before commit, not shipped:** parameterizing `%s` *inside* an existing `INTERVAL '...'` quoted literal doesn't work with psycopg (produces broken SQL, not a bound param) — fixed by f-string-interpolating the trusted internal `DEFAULT_LEASE_TTL_S` constant directly, never bound as a query parameter there; `recall_ann`'s vector literal was being f-string-embedded into the query 3 times instead of bound via `%s::VECTOR(1024)` — fixed to match `insert_memory_item`'s already-correct pattern. Added `agent/errors.py` (`StaleLeaseError`, the only exception this module raises) and `requirements.txt` (first runtime deps: `psycopg[binary]`, `psycopg_pool`). Wrote `scripts/smoke_test_db.py` (exercises all 27 methods against a live cluster under a disposable `scope_id`, cleans up via `ON DELETE CASCADE`) and `.github/workflows/db-smoke-test.yml` to run it — **written, import/compile-checked locally, NOT yet run against the live cluster**, since local 26257 is still blocked; that run is the next action, not this session's.
 
@@ -158,7 +165,7 @@ One entry per session, reverse-chronological. **Entries are never deleted** — 
 
 1. **Bedrock invoke blocked account-wide** (account activation, not IAM). [BRAINS] **DE-SCOPED — still broken, no longer blocking.** **Do not re-introduce a Bedrock dependency to "use more AWS"** — S3 is the anchor.
 2. **Embeddings had no provider** (row 1). [PLUMBER] **RESOLVED — Cohere, native 1024-dim, pre-seed**, so no re-embed owed. **Probed and PASSED 2026-08-11** (`scripts/verify_cohere.py`) — no longer just a decision, now measured.
-3. **:26257 blocked** by a transparent squid proxy (`403`), network-side. [PLUMBER] **OPEN, WORKED AROUND 2026-08-11 — no longer blocks Phase 1.** No hotspot/admin available and the IAM user has no EC2 permission (confirmed by a denied `DescribeInstances` call, not attempted around). `.github/workflows/db-migrate.yml` now runs `scripts/run_sql.py` on GitHub-hosted Actions runners, off this network entirely — free, no new infra. Console SQL Shell remains the Phase 0 fallback. Diagnosis: `docs/blocked-register.md` §3.
+3. **:26257 blocked** by a transparent squid proxy (`403`), network-side. [PLUMBER] **OPEN, WORKED AROUND 2026-08-11 — no longer blocks Phase 1.** Two independent workarounds now exist: `.github/workflows/db-migrate.yml`/`db-smoke-test.yml` (GitHub-hosted runners, off this network — always available, free) and, as of later the same session, **a VPN the user connected client-side**, confirmed by a raw TCP connect succeeding locally where it failed before. **Treat the VPN as session-scoped, not a fix** — the squid proxy itself is unchanged; don't assume 26257 is open next session without checking. Console SQL Shell remains the Phase 0 fallback. Diagnosis: `docs/blocked-register.md` §3.
 4. **First commit `4304008` has no `LICENSE`.** [ILLUSIONIST] **RESOLVED 2026-08-11 — added as a normal commit, pushed.** The "amend the root commit" plan conflated two Devpost rules; only the About-sidebar visibility rule governs LICENSE placement, and a remote already existed by the time this was checked.
 5. **`design/03-adr.md` + `architecture.svg` cited but absent.** [BRAINS] OPEN — decisions inline in HLD §3; **ADR-001/002 superseded by §2.1**.
 6. **`research/execution_roadmap.md` is pre-pivot** — Bedrock/Titan tasks stale (and it was mis-recorded here as missing until 2026-08-10). [BRAINS] **RESOLVED 2026-08-11 — deleted**, not retargeted: nothing else cited it, and its content is already superseded by §2.1/§6/§8 here. Recoverable from git history (commit `4304008`) if ever needed.
