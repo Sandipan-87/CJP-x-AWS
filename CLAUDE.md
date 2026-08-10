@@ -100,33 +100,32 @@ Every code-generation turn states which role is executing. Roles are domain boun
 ## 6. CURRENT POSITION
 
 ```
-PHASE 0 — CLOSED 2026-08-11. Exit gate PASS: P0-P1 + P0-B1 (both legs) +
-license badge. 6 of 6 status-board items PASS. 2026-08-11 = Day 11 of 17;
-7 days for Phases 1–3.
-⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code is 0.
-DONE  P0-P1 vector index · P0-P2 both clusters v26.2.1 · P0-P3 backup signal via
-      Cloud REST, NOT ccloud · P0-B2 MCP limits · P0-B1/Ollama leg — gate PASS,
-      `docs/phase0-verification.md` §3.2 · P0-B1/Cohere leg — gate PASS, 1024
-      dims + unit-norm confirmed, §3.3 · P0-I1 LICENSE, About-sidebar visible.
-OPEN (non-gating, carried into Phase 1/3)  S3 bucket `engram-agent-artifacts`
-      does not exist yet — IAM auth verified, `s3:CreateBucket` correctly
-      denied (least-privilege working as intended), bucket itself needs a
-      manual console step (§8 row 7, `docs/phase0-verification.md` §3.4).
-BLOCKING  (1) TCP 26257 blocked by squid — blocks ALL of Phase 1 code-side
-      work (SQL migrations can still be drafted without a live connection).
-      (2) Time.
-RESOLVED THIS SESSION  P0-I1 LICENSE — Apache-2.0 added as a normal commit,
-      pushed; About-sidebar detection needs the file present now, not in the
-      first commit (that conflated two separate Devpost rules — §8 #4).
+PHASE 0 — CLOSED 2026-08-11. PHASE 1 — STARTED same day (P1-P1 migrations
+written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
+⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
+   (4 migration files) for the first time this project.
+DONE  Phase 0 exit gate PASS (P0-P1 + P0-B1 both legs + license, see archived
+      block below) · P1-P1 migrations 001-004 written from LLD §6.2's frozen
+      DDL, dry-run parsed clean (`db/migrations/`, `db/migrations/README.md`)
+      · 26257 local block worked around via `.github/workflows/db-migrate.yml`
+      (GitHub Actions runners, off this network — §8 row 3).
+OPEN (non-gating)  S3 bucket `engram-agent-artifacts` does not exist yet —
+      IAM auth verified, `s3:CreateBucket` correctly denied (least-privilege
+      working as intended), bucket itself needs a manual console step (§8
+      row 7). Two GitHub repo secrets (ENGRAM_MEMORY_DSN, ENGRAM_TARGET_DSN)
+      not yet added — needed before `db-migrate.yml` can actually connect.
+BLOCKING  Time. (26257 no longer blocks — see DONE.)
 ```
 
-**Next action, in order:** (1) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7), then re-run `scripts/verify_s3.py`; (2) unblock 26257 (other network / admin request / EC2); (3) P1-P1 migrations from the LLD §6.2 fixed-state DDL — pure SQL, drafting doesn't need a live connection, applying does.
+**Next action, in order:** (1) add `ENGRAM_MEMORY_DSN`/`ENGRAM_TARGET_DSN` as GitHub repo secrets (manual — Checklist), then apply `001_engram_schema.sql` and `002_grants.sql` via `db-migrate.yml`; (2) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7), then re-run `scripts/verify_s3.py`; (3) `memory/db.py` (LLD §6.1, psycopg3 async pool + DAO methods) — the first runtime code, not just DDL.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 9 · Phase 0 exit gate reached earlier this session, then Phase 1 (P1-P1) started: migrations written, 26257 worked around via GitHub Actions.** Wrote `db/migrations/001_engram_schema.sql` through `004_checkpoint_ttl.sql` verbatim from the frozen DDL in `design/02-low-level-design.md` §6.2, split across four files per the runbook order in §6.3 rather than as one block: 001 = tables/indexes/views, 002 = roles+grants+`ALTER DEFAULT PRIVILEGES` (LLD note (c): a one-shot `GRANT ... ON ALL TABLES` misses tables created later), 003 = the C-SPANN vector index alone (must run after seeding, invariant #1), 004 = the three LangGraph checkpoint tables' TTL (must run immediately after `AsyncCockroachDBSaver.setup()` on an empty cluster, invariant #7 — TTL on a hot table forces a full rewrite). Added `db/migrations/README.md` recording that order explicitly. All four parse clean via `scripts/run_sql.py --dry-run` (26/6/1/3 statements respectively) — not yet applied to a live cluster. **Solved the 26257 local block without admin, hotspot, or EC2** (confirmed via a live `ec2:DescribeInstances` call that the `engram-phase0` IAM user has no EC2 permission at all — not attempted around, since widening IAM for this would violate CLAUDE.md §0's own corollary): wrote `.github/workflows/db-migrate.yml`, a `workflow_dispatch` job that runs `scripts/run_sql.py` against `ENGRAM_MEMORY_DSN`/`ENGRAM_TARGET_DSN` repo secrets on GitHub-hosted runners — those sit outside the local squid proxy entirely, so this reaches the cluster without touching the local network. Defaults to `--dry-run` so an accidental trigger can't mutate a cluster. **Not yet done:** the two DSNs still need adding as repo secrets (a manual, credential-handling step deliberately left to the user rather than run via `gh secret set` from here) before the workflow can actually connect; migrations 001/002 have not yet been applied to the live memory cluster. Updated `docs/blocked-register.md` §3 (workaround adopted, not a real fix — network-side cause unchanged) and `CLAUDE.md` §6/§8 row 3.
 
 **2026-08-11 — Session 8 · Phase 0 exit gate reached — CLOSED. Wrote `verify_cohere.py` + `verify_s3.py`, ran both.** Wrote `scripts/verify_cohere.py` (LLD T9b) and `scripts/verify_s3.py` (LLD T9c), matching the existing `verify_ollama.py` conventions (dotenv-loaded real keys, defensive probes that print actual response shape, explicit PASS/FAIL gate, triage hints on failure). Ran both against real credentials already present in `.env`. **Cohere: gate PASS** — `embed-english-v3.0` measured at exactly 1024 dims on both `input_type=search_document` and `input_type=search_query` (invariant #2 now closed by measurement, not vendor doc), vectors unit-norm (0.9997/0.9998), a 5-text batch call round-tripped correctly, single-call latency 0.7s. **P0-B1 now fully PASSES** (Ollama leg from Session 7 + Cohere leg from this session) — **Phase 0's exit gate (`P0-P1` + `P0-B1` + license badge) is met.** Updated status-board and gate-decision tables in `docs/phase0-verification.md` (new §3.3 Cohere evidence, new §3.4 S3 evidence, §6 P0-I1 filled in with real repo/commit data), `docs/external-constraints.md` §4 (Cohere VERIFIED), `docs/blocked-register.md` §2 (probed, not just decided), and this file's §2.1/§4/§6/§8. **S3: auth PASS, bucket missing.** The IAM identity (`arn:aws:iam::532749777349:user/engram-phase0`) authenticates and — confirmed by a direct `create_bucket` attempt that correctly returned `AccessDenied` — cannot self-provision, which is least-privilege working as designed, not a bug. The bucket `engram-agent-artifacts` itself was never created; this is **not** a Phase 0 gate item (the exit gate is P0-P1/P0-B1/license only) but does block Phase 3's invariant #11 work. Logged as new row 7 in `docs/blocked-register.md` and `CLAUDE.md` §8, non-blocking for Phase 0. **Phase 1 can now start on the SQL-migration track** (`P1-P1`, LLD §6.2 fixed-state DDL) — that work doesn't need a live 26257 connection to draft, only to apply, so it isn't gated on the squid-proxy blocker either.
 
@@ -146,7 +145,7 @@ One entry per session, reverse-chronological. **Entries are never deleted** — 
 
 1. **Bedrock invoke blocked account-wide** (account activation, not IAM). [BRAINS] **DE-SCOPED — still broken, no longer blocking.** **Do not re-introduce a Bedrock dependency to "use more AWS"** — S3 is the anchor.
 2. **Embeddings had no provider** (row 1). [PLUMBER] **RESOLVED — Cohere, native 1024-dim, pre-seed**, so no re-embed owed. **Probed and PASSED 2026-08-11** (`scripts/verify_cohere.py`) — no longer just a decision, now measured.
-3. **:26257 blocked** by a transparent squid proxy (`403`), network-side. [PLUMBER] **OPEN — blocks all of Phase 1.** Phase 0 ran via Console SQL Shell + MCP over 443. Fix: other network, admin ask, or EC2.
+3. **:26257 blocked** by a transparent squid proxy (`403`), network-side. [PLUMBER] **OPEN, WORKED AROUND 2026-08-11 — no longer blocks Phase 1.** No hotspot/admin available and the IAM user has no EC2 permission (confirmed by a denied `DescribeInstances` call, not attempted around). `.github/workflows/db-migrate.yml` now runs `scripts/run_sql.py` on GitHub-hosted Actions runners, off this network entirely — free, no new infra. Console SQL Shell remains the Phase 0 fallback. Diagnosis: `docs/blocked-register.md` §3.
 4. **First commit `4304008` has no `LICENSE`.** [ILLUSIONIST] **RESOLVED 2026-08-11 — added as a normal commit, pushed.** The "amend the root commit" plan conflated two Devpost rules; only the About-sidebar visibility rule governs LICENSE placement, and a remote already existed by the time this was checked.
 5. **`design/03-adr.md` + `architecture.svg` cited but absent.** [BRAINS] OPEN — decisions inline in HLD §3; **ADR-001/002 superseded by §2.1**.
 6. **`research/execution_roadmap.md` is pre-pivot** — Bedrock/Titan tasks stale (and it was mis-recorded here as missing until 2026-08-10). [BRAINS] **RESOLVED 2026-08-11 — deleted**, not retargeted: nothing else cited it, and its content is already superseded by §2.1/§6/§8 here. Recoverable from git history (commit `4304008`) if ever needed.

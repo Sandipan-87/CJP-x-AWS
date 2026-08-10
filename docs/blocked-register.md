@@ -26,7 +26,7 @@
 
 ---
 
-## 3 — Local TCP 26257 blocked by a transparent proxy · [PLUMBER] · **OPEN — blocks all of Phase 1**
+## 3 — Local TCP 26257 blocked by a transparent proxy · [PLUMBER] · **OPEN, WORKED AROUND 2026-08-11 — no longer blocks Phase 1**
 
 **Symptom.** psycopg3 and `cockroach sql` against port 26257 fail with `invalid response to SSL negotiation: H`. A raw probe of the same host:port returns `403 Forbidden` with `Server: squid/4.13` — the `H` is the first byte of `HTTP/1.1 403`. Ports 22 and 443 are open; no `HTTP_PROXY` / `HTTPS_PROXY` variables are set in the environment.
 
@@ -34,7 +34,9 @@
 
 **Workaround used in Phase 0.** Everything was executed through the CockroachDB Cloud Console SQL Shell and the managed MCP server, both over 443 — hence `db/console/*.sql` exists as 14 pasteable chunks.
 
-**Real fixes, in order of preference.** A different network (mobile hotspot) · an admin request to allowlist 26257 · move the dev loop onto an EC2 instance in the same region as the clusters.
+**Workaround adopted for Phase 1, 2026-08-11.** Neither a different network nor an admin allowlist request was available, and the `engram-phase0` IAM user has **no EC2 permissions** (confirmed by a direct `DescribeInstances` call, which correctly returned `UnauthorizedOperation` — least-privilege doing its job, not something to work around by widening the policy). **`.github/workflows/db-migrate.yml`** runs `scripts/run_sql.py` on a GitHub-hosted Actions runner, which sits on a normal, unrestricted network — not behind this proxy — using `ENGRAM_MEMORY_DSN`/`ENGRAM_TARGET_DSN` as repo secrets. Free on this public repo, no new infrastructure, no IAM change. This is now the primary path for anything needing a live 26257 connection; the Console-paste path from Phase 0 remains available as a fallback.
+
+**Still true, not attempted again this session.** A different network (mobile hotspot) or an admin request to allowlist 26257 would remove the underlying block rather than route around it — worth doing if either becomes available, but not required to keep working.
 
 ---
 

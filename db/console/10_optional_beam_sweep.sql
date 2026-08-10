@@ -1,0 +1,17 @@
+-- Engram P0-P1 · chunk 10 · DEFERRED — do not run in the Console SQL Shell.
+--
+-- Two reasons this cannot work here:
+--   1. The console rejects multi-statement batches
+--      ("parsing statement 1: expecting 1 statement, found 7").
+--   2. `SET vector_search_beam_size` is a SESSION variable. Each console
+--      submission may run in a fresh session, so the SET would not survive to
+--      the following EXPLAIN ANALYZE — you would silently measure the default
+--      beam size twice and record a meaningless "trade-off".
+--
+-- This is OPTIONAL and not part of the P0-P1 exit gate. Defer it until local
+-- port 26257 access exists, then run the full file, which keeps one session:
+--
+--   cockroach sql --url "$ENGRAM_MEMORY_DSN" -f db/phase0_vector_probe.sql
+--
+-- The beam-size numbers feed the README trade-off table (strategy §14.5), not
+-- the gate. Nothing downstream is blocked by skipping it now.

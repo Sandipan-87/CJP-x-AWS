@@ -1,0 +1,68 @@
+name: DB Migrate
+
+# Engram · manual SQL runner over GitHub-hosted runners. [PLUMBER]
+#
+# WHY THIS EXISTS: local port 26257 is blocked by a transparent squid proxy
+# (docs/blocked-register.md §3) and no admin unblock or alternate network is
+# available. GitHub Actions runners sit on a normal, unrestricted network —
+# not behind that proxy — so this is the sanctioned way to run migrations
+# and psycopg3-based verification scripts against the live cluster until the
+# local block is lifted. Free on this public repo.
+#
+# SETUP (one-time, manual — see the Manual Action Checklist):
+#   Repo Settings -> Secrets and variables -> Actions -> New repository secret
+#     ENGRAM_MEMORY_DSN = the .env value of the same name (memory cluster)
+#     ENGRAM_TARGET_DSN = the .env value of the same name (target cluster)
+#
+# USAGE: Actions tab -> "DB Migrate" -> Run workflow -> pick file/target/dry_run.
+# Defaults to --dry-run so an accidental trigger never mutates a cluster.
+
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: "Migration/script file to run (repo-relative path)"
+        required: true
+        default: "db/migrations/001_engram_schema.sql"
+      target:
+        description: "Which cluster DSN to use"
+        required: true
+        type: choice
+        default: "memory"
+        options:
+          - memory
+          - target
+      dry_run:
+        description: "Dry run only (parse statements, no connection, no writes)"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  run-sql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements-verify.txt
+
+      - name: Run against the chosen cluster
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+          ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}
+        run: |
+          set -e
+          DSN_VAR="ENGRAM_MEMORY_DSN"
+          if [ "${{ inputs.target }}" = "target" ]; then DSN_VAR="ENGRAM_TARGET_DSN"; fi
+
+          ARGS=(--dsn-var "$DSN_VAR" --stop-on-error)
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS+=(--dry-run); fi
+
+          echo "file   : ${{ inputs.file }}"
+          echo "target : ${{ inputs.target }} ($DSN_VAR)"
+          echo "dry_run: ${{ inputs.dry_run }}"
+          python scripts/run_sql.py "${{ inputs.file }}" "${ARGS[@]}"

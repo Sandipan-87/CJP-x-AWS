@@ -24,5 +24,9 @@ out/
 Thumbs.db
 *.log
 scratch/
-db/
 fixtures/
+
+# db/ holds SQL source (migrations, console-paste chunks) that IS committed —
+# only ignore actual local scratch state under it, never the .sql sources.
+db/*.db
+db/*.sqlite
