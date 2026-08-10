@@ -56,8 +56,8 @@
 
 ---
 
-## 6 — `execution_roadmap.md` is present but **pre-pivot** · [BRAINS] · **OPEN**
+## 6 — `execution_roadmap.md` is present but **pre-pivot** · [BRAINS] · **RESOLVED 2026-08-11 — deleted**
 
-Recorded here and in `CLAUDE.md` as *missing* until 2026-08-10; that was wrong. It exists at **`research/execution_roadmap.md`** (22.6 KB, the Day-1 four-phase plan) — not at the repo root, which is why the pointers looked dangling. Both pointers now name the real path.
+Recorded here and in `CLAUDE.md` as *missing* until 2026-08-10; that was wrong. It existed at **`research/execution_roadmap.md`** (22.6 KB, the Day-1 four-phase plan) — not at the repo root, which is why the pointers looked dangling.
 
-**What is actually broken:** it is **pre-pivot**. Its Phase 0/1 tasks still name Bedrock and Titan V2, so any day planned off it will plan work that no longer exists (`P0-B1` in particular is now an Ollama Cloud + Cohere probe, not a Bedrock one). Retarget it before using it to plan, or delete the references. **Do not leave a stale plan behind the pointer in the file that is read first every session.**
+**What was actually broken:** it was **pre-pivot**. Its Phase 0/1 tasks still named Bedrock and Titan V2, so any day planned off it would plan work that no longer exists (`P0-B1` in particular is now an Ollama Cloud + Cohere probe, not a Bedrock one). **Fix applied:** deleted rather than retargeted — nothing else in the repo cited its content, and everything in it is already superseded by `CLAUDE.md` §2.1/§6/§8. Recoverable from git history (commit `4304008`) if ever needed.
