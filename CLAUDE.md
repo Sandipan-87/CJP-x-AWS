@@ -75,11 +75,11 @@ Numbering is stable; a rule is never renumbered. Read `docs/invariants.md` befor
 
 ## 4. External constraints — rules here, **evidence in `docs/external-constraints.md`**
 
-Trust measurements over vendor docs and over this file's history. **Verification targets: Cohere (1024-dim) and S3 (put/get/hash) — no longer Bedrock.**
+Trust measurements over vendor docs and over this file's history. **Verification targets: Cohere (1024-dim) — CLOSED 2026-08-11 — and S3 (put/get/hash) — auth verified, bucket itself not yet provisioned, see §6/§8 row 7.**
 
 - **MCP is a control plane, not a data plane** — hot-path reads use psycopg3. MEASURED: 20 s timeout · `SELECT` defaults to **exactly `LIMIT 25`** · 16,384-char SQL cap · params **`{database, query}`, NOT `sql`** · **12 tools, 3 of them writes**, so the adapter is a **deny-by-default allowlist of 9 read tools** — a passthrough is a prompt-injection hole.
 - **ccloud 0.6.12:** `cluster disruption` is Advanced-only, so **we kill the agent, not the database**. **`cluster backup list` does not exist** — the backup gate uses the Cloud REST API with **Cluster Admin scoped to the target**. Fresh Basic returns an **empty** list, so the gate defaults to **refuse** — that's the demo beat; never claim the allow-path was tested unless it was. **The model never emits a command string**; it picks from an allowlisted enum and the adapter builds `argv`.
-- **Ollama Cloud claims are now VERIFIED** (`scripts/verify_ollama.py`, 2026-08-11 — gate PASS: auth + chat + strict-JSON tool call). **Cohere claims remain vendor-documented, UNVERIFIED** until its own probe runs. Free tiers are demo-grade — budget paid before rehearsal.
+- **Ollama Cloud AND Cohere claims are now both VERIFIED** (`scripts/verify_ollama.py` + `scripts/verify_cohere.py`, 2026-08-11 — both gate PASS). No provider claim in this file is still resting on vendor docs alone except Groq/Together (ladder rungs 2–3, not yet needed). Free tiers are demo-grade — budget paid before rehearsal.
 - **Free tier:** 50M RU + 10 GiB/month per org. **No changefeeds** (RU cost) — SSE + cursor, never per-panel polling.
 - **Devpost:** the repo / licence / demo-URL / video gates are **§9** — one copy of that rule set, there.
 
@@ -100,29 +100,35 @@ Every code-generation turn states which role is executing. Roles are domain boun
 ## 6. CURRENT POSITION
 
 ```
-PHASE 0 — 4 of 6 PASS, P0-B1 half-PASS (Ollama leg).  2026-08-11 = Day 11 of 17;
+PHASE 0 — CLOSED 2026-08-11. Exit gate PASS: P0-P1 + P0-B1 (both legs) +
+license badge. 6 of 6 status-board items PASS. 2026-08-11 = Day 11 of 17;
 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code is 0.
 DONE  P0-P1 vector index · P0-P2 both clusters v26.2.1 · P0-P3 backup signal via
-      Cloud REST, NOT ccloud · P0-B2 MCP limits · P0-B1/Ollama leg — real key
-      issued, gate PASS (auth+chat+strict-JSON tool call), evidence in
-      `docs/phase0-verification.md` §3.2 and `docs/external-constraints.md` §3.
-OPEN  P0-B1/Cohere leg — real key present in `.env` but the probe hasn't been
-      run yet; P0-B1 does not close until this leg also passes. AWS key also
-      present but unprobed against S3.
-BLOCKING  (1) TCP 26257 blocked by squid — blocks ALL of Phase 1. (2) Time.
+      Cloud REST, NOT ccloud · P0-B2 MCP limits · P0-B1/Ollama leg — gate PASS,
+      `docs/phase0-verification.md` §3.2 · P0-B1/Cohere leg — gate PASS, 1024
+      dims + unit-norm confirmed, §3.3 · P0-I1 LICENSE, About-sidebar visible.
+OPEN (non-gating, carried into Phase 1/3)  S3 bucket `engram-agent-artifacts`
+      does not exist yet — IAM auth verified, `s3:CreateBucket` correctly
+      denied (least-privilege working as intended), bucket itself needs a
+      manual console step (§8 row 7, `docs/phase0-verification.md` §3.4).
+BLOCKING  (1) TCP 26257 blocked by squid — blocks ALL of Phase 1 code-side
+      work (SQL migrations can still be drafted without a live connection).
+      (2) Time.
 RESOLVED THIS SESSION  P0-I1 LICENSE — Apache-2.0 added as a normal commit,
       pushed; About-sidebar detection needs the file present now, not in the
       first commit (that conflated two separate Devpost rules — §8 #4).
 ```
 
-**Next action, in order:** (1) run a Cohere probe (assert 1024 dims, record latency, LLD T9b) to close P0-B1 fully; (2) run an S3 put/get/hash probe against `engram-agent-artifacts` (LLD T9c); (3) unblock 26257 (other network / admin request / EC2); (4) P1-P1 migrations from the LLD §6.2 fixed-state DDL — pure SQL, no cluster needed.
+**Next action, in order:** (1) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7), then re-run `scripts/verify_s3.py`; (2) unblock 26257 (other network / admin request / EC2); (3) P1-P1 migrations from the LLD §6.2 fixed-state DDL — pure SQL, drafting doesn't need a live connection, applying does.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 8 · Phase 0 exit gate reached — CLOSED. Wrote `verify_cohere.py` + `verify_s3.py`, ran both.** Wrote `scripts/verify_cohere.py` (LLD T9b) and `scripts/verify_s3.py` (LLD T9c), matching the existing `verify_ollama.py` conventions (dotenv-loaded real keys, defensive probes that print actual response shape, explicit PASS/FAIL gate, triage hints on failure). Ran both against real credentials already present in `.env`. **Cohere: gate PASS** — `embed-english-v3.0` measured at exactly 1024 dims on both `input_type=search_document` and `input_type=search_query` (invariant #2 now closed by measurement, not vendor doc), vectors unit-norm (0.9997/0.9998), a 5-text batch call round-tripped correctly, single-call latency 0.7s. **P0-B1 now fully PASSES** (Ollama leg from Session 7 + Cohere leg from this session) — **Phase 0's exit gate (`P0-P1` + `P0-B1` + license badge) is met.** Updated status-board and gate-decision tables in `docs/phase0-verification.md` (new §3.3 Cohere evidence, new §3.4 S3 evidence, §6 P0-I1 filled in with real repo/commit data), `docs/external-constraints.md` §4 (Cohere VERIFIED), `docs/blocked-register.md` §2 (probed, not just decided), and this file's §2.1/§4/§6/§8. **S3: auth PASS, bucket missing.** The IAM identity (`arn:aws:iam::532749777349:user/engram-phase0`) authenticates and — confirmed by a direct `create_bucket` attempt that correctly returned `AccessDenied` — cannot self-provision, which is least-privilege working as designed, not a bug. The bucket `engram-agent-artifacts` itself was never created; this is **not** a Phase 0 gate item (the exit gate is P0-P1/P0-B1/license only) but does block Phase 3's invariant #11 work. Logged as new row 7 in `docs/blocked-register.md` and `CLAUDE.md` §8, non-blocking for Phase 0. **Phase 1 can now start on the SQL-migration track** (`P1-P1`, LLD §6.2 fixed-state DDL) — that work doesn't need a live 26257 connection to draft, only to apply, so it isn't gated on the squid-proxy blocker either.
 
 **2026-08-11 — Session 7 · Ollama Cloud probe run and gate PASS; CLI auto-compact disabled.** User obtained a real `OLLAMA_API_KEY` and ran `scripts/verify_ollama.py` directly. Gate (auth + chat + strict-JSON tool call) **PASSED**: chat round-trip 1.45s, tool call with the required `reasoning` field populated (846 chars) in 8.93s, multi-turn tool-result continuation 1.61s — all within the LLD's latency budgets. **Two corrections to prior evidence, not extensions of it:** (1) the exact tag `minimax-m3:cloud` does not appear in `/api/tags`'s model listing (only bare `minimax-m3` is listed among 18 models) yet every chat/tool call against the `:cloud` tag returns 200 — the tag works despite not being listed, now recorded as a measured discrepancy rather than treated as a bug; (2) the 2026-08-03 claim that `minimax-m3:cloud` "never returned `message.thinking`" and leaked `<mm:think>` into `content` is **contradicted** by this run — `message.thinking` came back as its own field, no tag leakage observed. The design principle (never depend on a vendor thinking channel as the *sole* rationale surface; keep the tool schema's required `reasoning` field load-bearing) is retained as forward-looking robustness, but the specific empirical justification for it is now corrected, not restated, in `docs/external-constraints.md` §3.1. Probe F confirmed Ollama Cloud has **no usable embedder** (`/api/embed` → 401, `/api/embeddings` → 404 across 5 model names) — reinforces, does not change, the standing Cohere-only embeddings decision. Updated: `docs/phase0-verification.md` (new §3.2 evidence block under P0-B1, status-board row), `docs/external-constraints.md` §3.0/§3.1, this file's §2.1/§4/§6. **P0-B1 is still not fully closed** — the Cohere leg (real key present in `.env`, probe not yet run) is the next gate. Separately, the user disabled the CLI's built-in **auto-compact** feature via `/config` — distinct from the still-unremovable `context-budget.js` warning hook (§6 Session 6); auto-compact was firing mid-session and summarizing context, `/config` → toggle off is the supported fix and needed no file edit.
 
@@ -139,11 +145,12 @@ One entry per session, reverse-chronological. **Entries are never deleted** — 
 **Remove a row only when genuinely fixed — de-scoped is not fixed.**
 
 1. **Bedrock invoke blocked account-wide** (account activation, not IAM). [BRAINS] **DE-SCOPED — still broken, no longer blocking.** **Do not re-introduce a Bedrock dependency to "use more AWS"** — S3 is the anchor.
-2. **Embeddings had no provider** (row 1). [PLUMBER] **RESOLVED — Cohere, native 1024-dim, pre-seed**, so no re-embed owed. Needs a probe, not a decision.
+2. **Embeddings had no provider** (row 1). [PLUMBER] **RESOLVED — Cohere, native 1024-dim, pre-seed**, so no re-embed owed. **Probed and PASSED 2026-08-11** (`scripts/verify_cohere.py`) — no longer just a decision, now measured.
 3. **:26257 blocked** by a transparent squid proxy (`403`), network-side. [PLUMBER] **OPEN — blocks all of Phase 1.** Phase 0 ran via Console SQL Shell + MCP over 443. Fix: other network, admin ask, or EC2.
 4. **First commit `4304008` has no `LICENSE`.** [ILLUSIONIST] **RESOLVED 2026-08-11 — added as a normal commit, pushed.** The "amend the root commit" plan conflated two Devpost rules; only the About-sidebar visibility rule governs LICENSE placement, and a remote already existed by the time this was checked.
 5. **`design/03-adr.md` + `architecture.svg` cited but absent.** [BRAINS] OPEN — decisions inline in HLD §3; **ADR-001/002 superseded by §2.1**.
 6. **`research/execution_roadmap.md` is pre-pivot** — Bedrock/Titan tasks stale (and it was mis-recorded here as missing until 2026-08-10). [BRAINS] **RESOLVED 2026-08-11 — deleted**, not retargeted: nothing else cited it, and its content is already superseded by §2.1/§6/§8 here. Recoverable from git history (commit `4304008`) if ever needed.
+7. **S3 bucket `engram-agent-artifacts` does not exist.** [PLUMBER] **OPEN — blocks Phase 3 (invariant #11), not Phase 0.** IAM identity authenticates and correctly lacks `s3:CreateBucket` (least-privilege confirmed working, not a misconfiguration) — `scripts/verify_s3.py` fails at `PutObject` with `NoSuchBucket`. Fix: create the bucket via the AWS console — manual, on purpose; do not widen the IAM policy to self-provision. Diagnosis: `docs/blocked-register.md` §7.
 
 ---
 

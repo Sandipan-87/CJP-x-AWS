@@ -22,7 +22,7 @@
 
 **Cause.** Row 1, plus a planning error: HLD §14 rated Titan model access as "L / one-click enable". That was empirically wrong and is now recorded as a **realised High** risk with a permanent mitigation.
 
-**Resolution.** Cohere `embed-english-v3.0`, natively 1024-dimensional — no truncation, padding or projection against `VECTOR(1024)`. Chosen **before any corpus was seeded**, so no re-embed was owed; the one-way pre-seed decision closed 5 days after its Day-5 deadline, which was survivable only because nothing was seeded. What remains is a **probe, not a decision**: batch ceiling, rate limits, latency and unit-norm behaviour are all unverified (`docs/external-constraints.md` §4).
+**Resolution.** Cohere `embed-english-v3.0`, natively 1024-dimensional — no truncation, padding or projection against `VECTOR(1024)`. Chosen **before any corpus was seeded**, so no re-embed was owed; the one-way pre-seed decision closed 5 days after its Day-5 deadline, which was survivable only because nothing was seeded. **Probed 2026-08-11** (`scripts/verify_cohere.py`, gate PASS): 1024 dims confirmed on both `input_type` values, vectors unit-norm, a 5-text batch call round-tripped correctly, single-call latency 0.7s. Rate limits at scale remain untested (single-probe run only) — not a Phase 0 gate item, revisit if Phase 2 load exposes it. Evidence: `docs/external-constraints.md` §4, `docs/phase0-verification.md` §3.3.
 
 ---
 
@@ -61,3 +61,15 @@
 Recorded here and in `CLAUDE.md` as *missing* until 2026-08-10; that was wrong. It existed at **`research/execution_roadmap.md`** (22.6 KB, the Day-1 four-phase plan) — not at the repo root, which is why the pointers looked dangling.
 
 **What was actually broken:** it was **pre-pivot**. Its Phase 0/1 tasks still named Bedrock and Titan V2, so any day planned off it would plan work that no longer exists (`P0-B1` in particular is now an Ollama Cloud + Cohere probe, not a Bedrock one). **Fix applied:** deleted rather than retargeted — nothing else in the repo cited its content, and everything in it is already superseded by `CLAUDE.md` §2.1/§6/§8. Recoverable from git history (commit `4304008`) if ever needed.
+
+---
+
+## 7 — S3 bucket `engram-agent-artifacts` does not exist yet · [PLUMBER] · **OPEN — blocks Phase 3, not Phase 0**
+
+**Symptom.** `scripts/verify_s3.py` authenticates correctly as `arn:aws:iam::532749777349:user/engram-phase0` but `PutObject` fails `NoSuchBucket` in `us-east-1`.
+
+**Cause.** The bucket was named in design docs and `.env` but never provisioned. A direct test confirms the IAM identity correctly **lacks** `s3:CreateBucket` — that's least-privilege working as designed (invariant #11 forbids broadening it to self-provision), not a misconfiguration.
+
+**Consequence.** Invariant #11 (large artifacts to S3, row holds URI + hash) has no bucket to write to yet. Not a Phase 0 gate item — `docs/phase0-verification.md`'s exit gate is P0-P1 + P0-B1 + license only — but it blocks Phase 3 work on the S3 artifact path.
+
+**Fix.** Create the bucket `engram-agent-artifacts` in `us-east-1` via the AWS console (or an admin-scoped CLI call) — a manual step, not something the `engram-phase0` IAM user should be granted permission to do itself. Re-run `scripts/verify_s3.py` afterward. See `docs/external-constraints.md` §5.

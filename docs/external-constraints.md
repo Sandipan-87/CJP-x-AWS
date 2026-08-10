@@ -88,13 +88,13 @@ Useful specifics:
 
 ---
 
-## 4. Cohere Embed — embeddings provider, **UNVERIFIED as of 2026-08-10**
+## 4. Cohere Embed — embeddings provider, **VERIFIED 2026-08-11** (`scripts/verify_cohere.py`, gate PASS)
 
 - `POST https://api.cohere.com/v2/embed`, `Authorization: Bearer $COHERE_API_KEY`, `model=embed-english-v3.0`, `embedding_types=["float"]`.
-- **`embed-english-v3.0` is documented as natively 1024-dimensional.** That native width — no truncation, no padding, no projection layer — is the entire reason it was selected over alternatives, because `VECTOR(1024)` is a schema invariant.
+- **1024-dim confirmed measured, not just documented.** Both `input_type=search_document` and `input_type=search_query` returned exactly 1024-dim vectors — no truncation, no padding, no projection layer — closing invariant #2's dimension pin with real evidence, not a vendor claim.
 - **`input_type` is required for v3 models:** `search_document` on the write path, `search_query` on the recall path. Both live in **one** vector space and are designed to be compared against each other; the asymmetry is intentional. Collapsing it to a single `input_type` **degrades recall silently rather than erroring** — the same failure class that invariant #3 exists to prevent.
-- **Unverified:** batch ceiling, rate limits, latency against the recall budget, and whether returned vectors are unit-norm. Cosine distance does not require unit norm, but the startup assertion should record what was actually observed rather than assuming.
-- The adapter asserts `len(vec) == 1024` at startup and refuses any other length. **This assertion is what makes the documented dimension true for us.**
+- **Measured, replacing the prior "unverified" list:** single-call latency **0.7s** (well inside a 2s recall-path budget); a 5-text batch call returned 5 vectors in order (batch ceiling not yet stress-tested past 5, but batching itself works); returned vectors are **unit-norm** (search_document norm 0.9997, search_query norm 0.9998) — not required by cosine distance, but now an observed fact. Rate limits still untested (single-probe run, not a load test). Full transcript: `docs/phase0-verification.md` §3.3.
+- The adapter asserts `len(vec) == 1024` at startup and refuses any other length. **This assertion is what makes the documented dimension true for us — and the probe confirms the assertion never fires under normal use.**
 
 ### 4.1 The vector space is now pinned
 
@@ -108,6 +108,7 @@ Invariant #2 pins the **dimension**; it cannot pin the **vector space**. Titan-1
 - SSE-S3 encryption, versioning on, lifecycle rule to expire demo artifacts.
 - Task-role policy grants `s3:PutObject` / `s3:GetObject` **scoped to that bucket ARN** — never `s3:*`, never `Resource: "*"`.
 - Serves invariant #11: rows store the `s3://` URI plus a content hash, never the blob. This is what protects the 10 GiB free-tier budget.
+- **Probed 2026-08-11** (`scripts/verify_s3.py`): the IAM identity (`arn:aws:iam::532749777349:user/engram-phase0`) authenticates correctly and, confirmed by direct test, **cannot** `s3:CreateBucket` — least-privilege is enforced exactly as intended. **But the bucket itself does not exist yet** — `PutObject` fails `NoSuchBucket`. Creating it is a manual AWS-console step (not a widened IAM policy); re-run the probe once it exists. Full transcript: `docs/phase0-verification.md` §3.4.
 
 ---
 

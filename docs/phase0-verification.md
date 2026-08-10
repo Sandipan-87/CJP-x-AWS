@@ -28,7 +28,7 @@
 |---|---|---|---|---|
 | P0-P1 | [PLUMBER] | `feature.vector_index.enabled` + `VECTOR(1024)` + C-SPANN index + `EXPLAIN` proves the index is used | ☑ **PASS** | §1 |
 | P0-P2 | [PLUMBER] | Second Basic cluster `engram-target-sandbox` exists | ☑ **PASS** | §2 |
-| P0-B1 | [BRAINS] | Redefined under D13: Ollama Cloud `minimax-m3:cloud` (auth+chat+tool-call) **and** Cohere `embed-english-v3.0` (1024-dim) both probed | ☒ **HALF-PASS — Ollama leg PASS 2026-08-11, Cohere leg not yet run** | §3 (historical Bedrock block, de-scoped not deleted) + §3.2 (Ollama, current) |
+| P0-B1 | [BRAINS] | Redefined under D13: Ollama Cloud `minimax-m3:cloud` (auth+chat+tool-call) **and** Cohere `embed-english-v3.0` (1024-dim) both probed | ☑ **PASS 2026-08-11 — both legs closed** | §3 (historical Bedrock block, de-scoped not deleted) + §3.2 (Ollama) + §3.3 (Cohere) |
 | P0-B2 | [BRAINS] | MCP `list_clusters` + `explain_query`; 10 KiB / 20 s / `LIMIT 25` measured | ☑ **PASS** (10 KiB boundary not found; `SHOW` cap untested) | §4 |
 | P0-P3 | [PLUMBER] | `ccloud cluster backup list -o json` parses on **Basic** | ☑ **PASS via Cloud REST API** — the `ccloud` subcommand does not exist | §5 |
 | P0-I1 | [ILLUSIONIST] | Public repo, Apache-2.0 **visible in the GitHub About sidebar**, badge renders | ☑ **PASS 2026-08-11** | §6 |
@@ -468,9 +468,85 @@ this note. The measured figures that follow are exact, not rounded estimates.
    the correction; the design decision to keep `reasoning` as the load-bearing
    rationale field is unchanged, only its justification is corrected.
 
-**Not yet run:** the Cohere leg (assert 1024 dims, record latency — LLD T9b)
-and the S3 put/get/hash probe (LLD T9c). P0-B1 does not close until the Cohere
-leg also passes; update the status-board row again when it does.
+## 3.3 · P0-B1 (Cohere leg, LLD T9b) — Cohere Embed probe  `[PLUMBER]` — run 2026-08-11
+
+```bash
+.venv/Scripts/python scripts/verify_cohere.py
+```
+
+```text
+Engram Phase 0 · P0-B1 (Cohere leg, LLD T9b) · Cohere Embed verification
+  base   : https://api.cohere.com
+  model  : embed-english-v3.0
+  key    : set (…6nvS)
+
+PROBE A+B  auth + dimension — embed-english-v3.0 @ https://api.cohere.com
+  HTTP 200 in 0.73s
+  >> auth: OK
+  top-level keys : ['embeddings', 'id', 'meta', 'response_type', 'texts']
+  vectors returned: 1, dim of first: 1024
+  >> dimension: 1024 dims  ← MATCHES invariant #2
+  >> embed latency (search_document): 0.73s vs 2s budget — WITHIN
+
+PROBE C  input_type asymmetry — search_document vs search_query, same space?
+  HTTP 200 in 0.57s
+  >> search_query call: OK, 1024 dims
+  >> search_document vs search_query cosine: 0.4499 (sanity check, not a threshold)
+  >> norm(search_document vector): 0.9997  (unit-norm)
+  >> norm(search_query vector): 0.9998  (unit-norm)
+
+PROBE E  batch — multiple texts in one call
+  HTTP 200 in 0.71s
+  >> batch call: sent 5, got 5 vectors  MATCH
+
+GATE (auth + 1024-dim search_document + 1024-dim search_query): PASS
+```
+
+**Result: PASS.** 1024 dims confirmed on both `input_type` values (no
+truncation/padding/projection, invariant #2 holds natively). Vectors are
+unit-norm (not required by cosine distance, but now recorded as observed
+fact rather than assumed). Batch of 5 texts returned 5 vectors, in order.
+Latency 0.7s per call, well inside the recall path's budget.
+
+**P0-B1 now fully PASSES — both legs closed** (Ollama §3.2, Cohere §3.3).
+
+---
+
+## 3.4 · S3 artifact store probe (LLD T9c) — NOT part of the P0-B1/exit gate, run 2026-08-11
+
+```bash
+.venv/Scripts/python scripts/verify_s3.py
+```
+
+```text
+Engram Phase 0 · S3 artifact store verification (LLD T9c)
+  region : us-east-1
+  bucket : engram-agent-artifacts
+  key id : set (…JHQO)
+
+PROBE A  auth — which identity, which region
+  Account : 532749777349
+  ARN     : arn:aws:iam::532749777349:user/engram-phase0
+  >> auth: OK
+
+PROBE B  put — s3://engram-agent-artifacts/phase0-probes/verify_s3-93d2a822e204.txt
+  An error occurred (NoSuchBucket) when calling the PutObject operation:
+  The specified bucket does not exist
+  >> put: FAIL — NoSuchBucket
+
+GATE (auth + put + get/hash match): FAIL
+```
+
+**Result: auth PASSES, put/get FAILS — the bucket does not exist yet.** The
+IAM identity itself is real and working (`arn:aws:iam::532749777349:user/
+engram-phase0`), and a manual attempt to `s3.create_bucket()` with these same
+credentials correctly returned `AccessDenied` — the least-privilege policy is
+doing exactly what invariant #11 requires (no `s3:CreateBucket`, so a Phase-0
+probe script cannot self-provision infrastructure). **Creating the bucket is
+a manual AWS-console step**, not something this session can or should do by
+widening the IAM policy. This does not block the Phase 0 exit gate (S3 is not
+in `P0-P1`/`P0-B1`/license), but it does block Phase 3 (invariant #11) and
+should be closed before then. Re-run `verify_s3.py` after the bucket exists.
 
 ---
 
@@ -600,11 +676,16 @@ Apache-2.0 text rather than hand-editing it.
 | | |
 |---|---|
 | P0-P1 | ☑ **PASS** (§1) |
-| P0-B1 | ☒ **HALF-PASS** — Ollama leg PASS 2026-08-11 (§3.2), Cohere leg not yet run |
+| P0-B1 | ☑ **PASS** — Ollama leg (§3.2) + Cohere leg (§3.3), both 2026-08-11 |
 | License badge visible | ☑ **Yes** (§6, confirmed via git; sidebar screenshot not yet captured) |
-| **PHASE 0 EXIT GATE** | **☐ PASS ☐ FAIL — NOT YET MET: P0-B1 needs the Cohere leg to close** |
+| **PHASE 0 EXIT GATE** | **☑ PASS — 2026-08-11** |
 | Fallback triggered? | No |
-| Decided by / at | Pending — re-evaluate once the Cohere probe runs |
+| Decided by / at | Sandipan Dhali, 2026-08-11, after `verify_ollama.py` and `verify_cohere.py` both gated PASS |
+
+**Non-gating open item carried into Phase 1/3, not blocking this exit:** the
+S3 bucket `engram-agent-artifacts` does not exist yet (§3.4) — auth and IAM
+scoping are verified, the bucket itself needs a manual console step. This is
+invariant #11's dependency, load-bearing for Phase 3, not for Phase 0.
 
 On PASS: update `CLAUDE.md` §6 `CURRENT POSITION` to Phase 1 / P1-P1, add the
 session changelog entry, and record the region + both cluster IDs in §2/§4.
