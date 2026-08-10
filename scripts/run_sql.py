@@ -193,6 +193,14 @@ def main() -> int:
             f"FATAL: no DSN. Set {args.dsn_var} in .env (or pass --dsn).\n"
             "       .env is gitignored; never put a real DSN in .env.example."
         )
+    if "sslrootcert=" not in dsn:
+        # CockroachDB Cloud clusters are signed by a publicly-trusted CA, so the OS
+        # trust store verifies them — no cluster-specific root.crt needs shipping.
+        # Without this, sslmode=verify-full looks for ~/.postgresql/root.crt, which
+        # doesn't exist on a fresh machine (e.g. a GitHub Actions runner) and fails
+        # closed rather than silently skipping verification.
+        sep = "&" if "?" in dsn else "?"
+        dsn = f"{dsn}{sep}sslrootcert=system"
     safe = re.sub(r"//([^:]+):[^@]+@", r"//\1:***@", dsn)
     print(f"dsn        : {safe}\n")
 
