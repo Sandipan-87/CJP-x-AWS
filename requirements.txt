@@ -3,3 +3,4 @@
 # speculative added ahead of code that actually imports it.
 psycopg[binary]>=3.2        # CLAUDE.md §2, agent/memory/db.py — the async pool driver
 psycopg_pool>=3.2           # AsyncConnectionPool, used directly by agent/memory/db.py
+httpx>=0.27.0               # agent/providers/cohere_embed.py — thin client, no cohere SDK

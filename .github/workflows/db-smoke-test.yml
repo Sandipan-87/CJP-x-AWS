@@ -44,5 +44,5 @@ jobs:
           ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
         run: python scripts/smoke_test_leases.py --sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run scoring unit tests (T1, no cluster needed)
-        run: pytest tests/test_scoring.py -v
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks, no cluster/secrets needed)
+        run: pytest tests/test_scoring.py tests/test_cohere_embed.py -v

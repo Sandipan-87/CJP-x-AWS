@@ -105,35 +105,40 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
-      APPLIED live · **`agent/memory/{db,scoring,recall,leases}.py` all
-      WRITTEN AND VERIFIED LIVE, 2026-08-11** — `smoke_test_db.py` 29/29,
-      `smoke_test_recall.py` 10/10, `smoke_test_leases.py` 6/6,
-      `tests/test_scoring.py` 14/14 (T1, LLD §14) — 59 checks total against
-      the real memory cluster / pure functions, not import-checked guesses.
-      `leases.py`'s smoke test is the actual kill-and-resume mechanism
-      end-to-end: second holder blocked, forced expiry (simulated
-      `stop-task`), `takeover()` succeeds, original holder's own background
-      renew loop detects the loss and signals it — first run, no bugs.
-      **S3 fully closed** — bucket created, IAM policy attached, gate
-      PASSES (real put/get/hash round-trip measured, not simulated).
+      APPLIED live · `agent/memory/{db,scoring,recall,leases}.py` all
+      WRITTEN AND VERIFIED LIVE (59 checks) · **S3 fully closed** ·
+      **`agent/providers/{base,cohere_embed}.py` WRITTEN AND VERIFIED,
+      2026-08-11** — `CohereEmbeddings` (LLD §7, the only embedder, no
+      ladder): 9/9 mocked unit tests (T3, LLD §14 — dimension mismatch
+      rejected not written, 429 retry-then-succeed, 401 never retried, all
+      client-side validation) + 5/5 live checks against the real Cohere API
+      (batch embed, single query embed, 1024-dim confirmed on every vector).
+      New exceptions `EmbeddingProviderError`/`EmbeddingDimensionError` in
+      `agent/errors.py`. 23 unit tests + 50 live checks total now pass
+      across everything written so far.
 OPEN (non-gating)  Migrations 003 (vector index) and 004 (checkpoint TTL)
       NOT YET applied — real prerequisites (seed corpus; `saver.setup()`)
-      haven't happened, correct sequencing not a gap. `agent/providers/
-      cohere_embed.py` not yet written, so `recall()` still takes a
-      precomputed vector, not raw incident text. 26257 is open right now
-      only because of the user's VPN — treat it as still blocked by
-      default, not fixed.
+      haven't happened, correct sequencing not a gap. `agent/memory/
+      embeddings.py` (write-path + fingerprint cache) not yet written, so
+      `recall()` still takes a precomputed vector, not raw incident text —
+      `cohere_embed.py` unblocks that but doesn't itself close it.
+      `agent/providers/base.py` still has no `LLMProvider` ABC (lands with
+      `ollama_cloud_llm.py`, deliberately deferred, not a gap). 26257 is
+      open right now only because of the user's VPN — treat it as still
+      blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/providers/cohere_embed.py` (unblocks a real embed→recall round-trip); (2) `agent/memory/embeddings.py` (write-path embedding + fingerprint cache, so seeding can start); (3) migrations 003/004 once their prerequisites are in place; (4) the first graph node (`agent/nodes/observe.py` or `recall.py`) — the point where `agent/memory/*` stops being isolated modules and becomes a running agent.
+**Next action, in order:** (1) `agent/memory/embeddings.py` (write-path embedding + fingerprint cache, LLD's D9 "never embed the same content twice" — the piece that actually lets `recall()` take raw text via `CohereEmbeddings`); (2) migrations 003/004 once their prerequisites are in place; (3) the first graph node (`agent/nodes/observe.py` or `recall.py`) — the point where `agent/memory/*` stops being isolated modules and becomes a running agent.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 16 · Wrote + verified `agent/providers/{base,cohere_embed}.py` — the real embedding provider.** `agent/providers/base.py`: `EmbeddingProvider` ABC only — `LLMProvider` deliberately deferred to `ollama_cloud_llm.py`, not written speculatively. `agent/providers/cohere_embed.py`: `CohereEmbeddings`, a thin `httpx` client (not the `cohere` SDK, same choice LLD §7 leaves open) implementing `embed(texts, input_type)`. Enforces every hard limit from LLD §7's adapter table itself, not just documents them: `input_type` required with no default (`ValueError` if invalid, before any HTTP call); batch capped at 96, rejected client-side rather than silently sub-batched; every returned vector's width checked, and a mismatch raises the new `EmbeddingDimensionError` — "never degrade, never write, park immediately" (LLD §16) — while a *transient* failure (429/5xx/transport) retries 3× with jitter before raising the new `EmbeddingProviderError`, and a 401 is never retried (not transient, a config problem). Added a `client:` constructor seam specifically so `tests/test_cohere_embed.py` (T3, LLD §14) can exercise all of this against `httpx.MockTransport` — 9/9 pass, no network, no real key, covering exactly what T3 names ("a non-1024-width embedding response is rejected, not written") plus the retry/auth paths. Then ran `scripts/smoke_test_cohere_embed.py` against the real Cohere API (same account as `verify_cohere.py`'s Phase-0 probe, but through the actual provider class this time) — 5/5 pass: batch-of-3 and single-query embeds both return correct 1024-dim vectors, empty input short-circuits, invalid `input_type` rejected before any request. Added `httpx` to `requirements.txt` (first time a runtime dep beyond psycopg was needed). **23 unit tests + 50 live checks now pass in total** across every module written so far. **Not done:** `agent/memory/embeddings.py` (write-path + fingerprint cache) — `recall()` still takes a precomputed vector, this chunk unblocks that path but doesn't close it.
 
 **2026-08-11 — Session 15 · S3 fully closed (IAM policy attached, gate PASSES); wrote + live-verified `agent/memory/leases.py` — the actual kill-and-resume mechanism.** User attached the scoped IAM policy from the step-by-step handed over last session; re-running `verify_s3.py` now passes fully — a real object round-tripped with a byte-identical sha256 (`docs/phase0-verification.md` §3.6). Cleanup correctly fails `AccessDenied` (the policy never granted `DeleteObject`) — one small leftover test object in the bucket, deliberate scope not a bug. `docs/blocked-register.md` §7 marked RESOLVED. Wrote `agent/memory/leases.py` (LLD §6.4): the retry/backoff/jitter policy the runbook comment described but `db.py` deliberately didn't implement (single-attempt primitives only, by design — see `db.py`'s own docstring). `LeaseHandle` auto-renews in the background and exposes `wait_until_lost()` — the mechanism that turns a lost lease into something a graph node can actually react to mid-work, not just fail silently on its next write. Added `LeaseAcquireTimeoutError` to `agent/errors.py` (distinct from `StaleLeaseError`: never winning a lease vs. losing one already held). **Verified live, first run, no bugs** — `scripts/smoke_test_leases.py`, 6/6: a second holder correctly times out while a live lease is held; a forced expiry (simulating `aws ecs stop-task`) lets a new holder `takeover()`; the original holder's own background renew loop detects the loss within its next renew cycle and signals it. This is the literal mechanism behind the submission's second demo beat ("it survives"), now measured working against the real memory cluster, not simulated. Wired into `db-smoke-test.yml`. `agent/memory/{db,scoring,recall,leases}.py` are now all written and live-verified — 59 checks total across four smoke tests + the unit suite.
 
