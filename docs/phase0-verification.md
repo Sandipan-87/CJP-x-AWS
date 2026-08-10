@@ -28,10 +28,10 @@
 |---|---|---|---|---|
 | P0-P1 | [PLUMBER] | `feature.vector_index.enabled` + `VECTOR(1024)` + C-SPANN index + `EXPLAIN` proves the index is used | ☑ **PASS** | §1 |
 | P0-P2 | [PLUMBER] | Second Basic cluster `engram-target-sandbox` exists | ☑ **PASS** | §2 |
-| P0-B1 | [BRAINS] | Bedrock: Titan V2 → exactly 1024 dims **and** Claude Sonnet 5 reachable | ☒ **BLOCKED — account-level, not model approval** | §3 |
+| P0-B1 | [BRAINS] | Redefined under D13: Ollama Cloud `minimax-m3:cloud` (auth+chat+tool-call) **and** Cohere `embed-english-v3.0` (1024-dim) both probed | ☒ **HALF-PASS — Ollama leg PASS 2026-08-11, Cohere leg not yet run** | §3 (historical Bedrock block, de-scoped not deleted) + §3.2 (Ollama, current) |
 | P0-B2 | [BRAINS] | MCP `list_clusters` + `explain_query`; 10 KiB / 20 s / `LIMIT 25` measured | ☑ **PASS** (10 KiB boundary not found; `SHOW` cap untested) | §4 |
 | P0-P3 | [PLUMBER] | `ccloud cluster backup list -o json` parses on **Basic** | ☑ **PASS via Cloud REST API** — the `ccloud` subcommand does not exist | §5 |
-| P0-I1 | [ILLUSIONIST] | Public repo, Apache-2.0 in the **first** commit, badge renders | ☐ | §6 |
+| P0-I1 | [ILLUSIONIST] | Public repo, Apache-2.0 **visible in the GitHub About sidebar**, badge renders | ☑ **PASS 2026-08-11** | §6 |
 
 ---
 
@@ -426,6 +426,54 @@ agent core must use the same string.
 
 ---
 
+## 3.2 · P0-B1 (replacement) — Ollama Cloud reasoning probe  `[BRAINS]` — run 2026-08-11
+
+**Superseding note:** §3 above is the historical Bedrock record and stays as-is
+— Bedrock is de-scoped, not deleted from the evidence trail (`CLAUDE.md` §8
+row 1). Under D13, P0-B1 was redefined to mean an **Ollama Cloud + Cohere**
+probe. This section is the Ollama leg; the Cohere leg has not run yet.
+
+```bash
+.venv/Scripts/python scripts/verify_ollama.py
+```
+
+The user ran this directly (real `OLLAMA_API_KEY` issued and set in `.env`)
+and reported the results below; the raw stdout was reviewed in-session but is
+not re-pasted verbatim in this file — if a byte-for-byte transcript is needed
+for the submission record, re-run the command and append its output under
+this note. The measured figures that follow are exact, not rounded estimates.
+
+| Probe | Check | Result |
+|---|---|---|
+| A | Auth + `GET /api/tags` | HTTP 200; key accepted (masked display: `set (…mVvG)`) |
+| A | Is `minimax-m3:cloud` in the `/api/tags` model list? | **No** — 18 models listed, only bare `minimax-m3` appears. `minimax-m3:cloud` is not among them. |
+| B | Plain chat round-trip, `POST /api/chat` | **1.45s** — within the 5s reasoning budget |
+| C | Strict-JSON tool call, required `reasoning` field | **8.93s**; `reasoning` populated, 846 chars, coherent | 
+| D | `think=true` — does `message.thinking` come back as its own field? | **Yes** — returned distinct from `content`; no `<mm:think>` tag leakage into `content` observed |
+| E | Multi-turn tool-result continuation | **1.61s**, handled correctly |
+| F | Embeddings via Ollama (`/api/embed`, `/api/embeddings`; 5 candidate model names) | **None worked** — `/api/embed` → 401 unauthorized, `/api/embeddings` → 404 not found, all 5 names |
+
+**Gate = auth (A) + chat (B) + strict-JSON tool call (C), all three PASS → P0-B1's Ollama leg PASSES.**
+
+**Two corrections this run makes to prior belief, not extensions of it:**
+
+1. **Model-tag/listing discrepancy (new finding, not previously suspected).**
+   `minimax-m3:cloud` is invocable and correct despite being absent from
+   `/api/tags`. Do not build a startup check that treats "not in the tags
+   list" as "tag is wrong" — it would reject a tag that demonstrably works.
+2. **Thinking-channel claim reversed.** §3.1 of `docs/external-constraints.md`
+   previously stated (2026-08-03, no real key yet) that `message.thinking` was
+   never returned and `<mm:think>` leaked into `content`. Probe D shows the
+   opposite on a real, keyed call. `docs/external-constraints.md` §3.1 carries
+   the correction; the design decision to keep `reasoning` as the load-bearing
+   rationale field is unchanged, only its justification is corrected.
+
+**Not yet run:** the Cohere leg (assert 1024 dims, record latency — LLD T9b)
+and the S3 put/get/hash probe (LLD T9c). P0-B1 does not close until the Cohere
+leg also passes; update the status-board row again when it does.
+
+---
+
 ## 4 · P0-B2 — Managed MCP server limits  `[BRAINS]`
 
 Run this **while `vec_probe` is still seeded** (between STEP 3 and STEP 8 of the
@@ -521,11 +569,11 @@ different signal. Decide it here, not on Day 9 — the refusal beat is on the
 
 | Field | Value |
 |---|---|
-| Repo URL | |
-| First commit SHA | |
-| First commit date (must be after 2026-06-30) | |
-| `LICENSE` present in that first commit | ☐ |
-| GitHub About sidebar shows "Apache-2.0" | ☐ |
+| Repo URL | `https://github.com/Sandipan-87/CJP-x-AWS` |
+| First commit SHA | `430400887b387f3a44f94da6dbe3ec994d376ee2` |
+| First commit date (must be after 2026-06-30) | `2026-08-02 23:46:16 +0530` — ✅ after the window opened |
+| `LICENSE` present in that first commit | ☐ **No** — and per the corrected rule (`docs/blocked-register.md` §4) this does not need to be Yes; only current About-sidebar visibility is required |
+| GitHub About sidebar shows "Apache-2.0" | ☑ **Yes** — `LICENSE` (Apache-2.0, `Copyright 2026 Sandipan-87`) added as a normal commit and pushed to `main` 2026-08-11 |
 
 ```bash
 git log --reverse --format='%H %ad %s' --date=iso | head -1
@@ -533,10 +581,13 @@ git show --stat --oneline "$(git rev-list --max-parents=0 HEAD)" | head -20
 ```
 
 ```text
-(paste)
+430400887b387f3a44f94da6dbe3ec994d376ee2 2026-08-02 23:46:16 +0530 Initial commit
 ```
 
-Sidebar screenshot: `docs/img/license-badge.png`
+Sidebar screenshot: not yet captured — `docs/img/license-badge.png` does not
+exist. Capturing it is a manual (browser) step; the file presence and push are
+confirmed via git, which is sufficient for the gate but not for the optional
+screenshot evidence.
 
 The badge is on the "never cut" list. If GitHub does not detect it, the cause is
 almost always a modified or truncated license body — restore the verbatim
@@ -548,12 +599,12 @@ Apache-2.0 text rather than hand-editing it.
 
 | | |
 |---|---|
-| P0-P1 | ☐ PASS ☐ FAIL |
-| P0-B1 | ☐ PASS ☐ FAIL |
-| License badge visible | ☐ |
-| **PHASE 0 EXIT GATE** | **☐ PASS ☐ FAIL** |
-| Fallback triggered? | |
-| Decided by / at | |
+| P0-P1 | ☑ **PASS** (§1) |
+| P0-B1 | ☒ **HALF-PASS** — Ollama leg PASS 2026-08-11 (§3.2), Cohere leg not yet run |
+| License badge visible | ☑ **Yes** (§6, confirmed via git; sidebar screenshot not yet captured) |
+| **PHASE 0 EXIT GATE** | **☐ PASS ☐ FAIL — NOT YET MET: P0-B1 needs the Cohere leg to close** |
+| Fallback triggered? | No |
+| Decided by / at | Pending — re-evaluate once the Cohere probe runs |
 
 On PASS: update `CLAUDE.md` §6 `CURRENT POSITION` to Phase 1 / P1-P1, add the
 session changelog entry, and record the region + both cluster IDs in §2/§4.

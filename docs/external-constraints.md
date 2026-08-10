@@ -60,17 +60,25 @@ Useful specifics:
 
 ## 3. Reasoning providers — ladder is **Ollama Cloud → Groq → Together AI** (D13, 2026-08-11)
 
-### 3.0 Ollama Cloud — primary, **UNVERIFIED as of 2026-08-11**
+### 3.0 Ollama Cloud — primary, **VERIFIED 2026-08-11** (`scripts/verify_ollama.py`, real key, gate PASS)
 
-- Two candidate wire shapes, neither yet chosen: OpenAI-compatible `POST https://ollama.com/v1/chat/completions` vs native `POST https://ollama.com/api/chat`. Preference is OpenAI-compatible so rungs 2–3 share wire format with rung 1. Settle via `scripts/verify_ollama.py` (probes A–F, already written) before the Day-4 tool-schema freeze.
-- **Unverified:** the model tag (`minimax-m3:cloud` vs `minimax-m3`), tool-calling fidelity across multi-turn tool-result exchanges, rate limits, and p95 latency against the 5 s reasoning / 8 s end-to-end demo budget — now the **tightest** budget under D13, since a thinking model's hidden tokens bill against it.
-- Auth: `Authorization: Bearer $OLLAMA_API_KEY`.
+- Wire shape resolved: **native `POST https://ollama.com/api/chat`**, not the OpenAI-compatible `/v1/chat/completions` — that's what the script actually calls and what passed. Rungs 2–3 (Groq, Together) stay OpenAI-compatible; the `LLMProvider` ABC absorbs the shape difference, so this does **not** unify wire formats across the ladder as once hoped, it just settles rung 1.
+- Auth: `Authorization: Bearer $OLLAMA_API_KEY` — confirmed working against a real issued key.
+- **Measured, replacing the prior "unverified" list:**
+  - Probe A (auth + `/api/tags` listing): the exact tag `minimax-m3:cloud` does **not** appear in the returned list (18 models listed, only bare `minimax-m3` among them) — yet chat/tool calls against `minimax-m3:cloud` return HTTP 200 with sensible output every time. **Treat this tag as confirmed by behavior, not by the listing** — do not add a check that rejects the tag for being absent from `/api/tags`.
+  - Probe B (plain chat round-trip): **1.45s** — inside the 5s reasoning budget.
+  - Probe C (strict-JSON tool call, required `reasoning` field): **8.93s**, `reasoning` field populated with 846 chars of coherent rationale. Gate gate = PASS (A+B+C).
+  - Probe E (multi-turn tool-result continuation): **1.61s**, handled correctly.
+  - Probe F (embeddings availability): **no usable embedder** — `/api/embed` → 401 unauthorized, `/api/embeddings` → 404 not found, across 5 candidate model names. Confirms (does not newly decide) that Ollama Cloud has no fallback path for embeddings; Cohere remains the sole provider, §4.
+  - Full transcript: `docs/phase0-verification.md` §3.2.
 - Free tier is demo-grade; budget a paid tier from the day the demo is first rehearsed end-to-end.
-- A circuit breaker parks the agent after N consecutive failures. Moving down the ladder is a config change, because every rung is OpenAI-compatible or thin-HTTP behind the `LLMProvider` ABC. **If Ollama Cloud breaks the latency budget, promote Groq** (config-only, no code change).
+- A circuit breaker parks the agent after N consecutive failures. Moving down the ladder is a config change. **If Ollama Cloud breaks the latency budget, promote Groq** (config-only, no code change).
 
 ### 3.1 Never depend on a vendor "thinking" channel
 
-**Measured 2026-08-03 (Session 2), on this same provider — not a Groq artifact:** `minimax-m3:cloud` **never returned `message.thinking`**, and `<mm:think>` tags leaked into `content`. Under D13 this is **primary-path, not defensive**: adapters must strip `<mm:think>` tags from `content` before JSON parsing, and audit-grade rationale lives in the tool schema's **required `reasoning` field**, where the pydantic validator can enforce its presence.
+**Correction 2026-08-11 — the 2026-08-03 measurement below is contradicted by a real-key run, recorded not deleted.** Probe D of `scripts/verify_ollama.py` (`think=true`) shows `minimax-m3:cloud` **does** return `message.thinking` as its own field, and no `<mm:think>` tag leakage into `content` was observed. The specific empirical justification for tag-stripping no longer holds. **The design principle is retained anyway, as forward-looking robustness, not because of this measurement:** a vendor "thinking" channel is not a stable, audit-grade rationale surface across providers or model versions, so audit-grade rationale still lives in the tool schema's **required `reasoning` field**, enforceable by the pydantic validator. Tag-stripping logic can stay in the adapter as defense-in-depth; it is no longer covering an observed failure.
+
+**Superseded — original 2026-08-03 (Session 2) claim, kept for the record:** *"`minimax-m3:cloud` never returned `message.thinking`, and `<mm:think>` tags leaked into `content`."* Session 2's own "next action" list still named `verify_ollama.py` as not-yet-run at the time (`docs/changelog-archive.md`) — no `OLLAMA_API_KEY` had been issued yet, so this was a recorded assumption, not a measurement, and is now known to be wrong for this provider/model as of the 2026-08-11 verified run.
 
 ### 3.2 Groq API — ladder rung 2, demoted (was D11's one-day primary, 2026-08-10)
 
