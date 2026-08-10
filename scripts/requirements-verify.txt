@@ -5,3 +5,4 @@ boto3>=1.35.0               # S3 only (engram-agent-artifacts) — Bedrock is of
 mcp>=1.9.0,<2.0.0           # managed MCP server client — 2.0.0 renamed streamablehttp_client (breaking)
 httpx>=0.27.0               # Ollama Cloud client (LLD §6: direct /api/chat, no SDK)
 python-dotenv>=1.0.0        # .env loading for the verify scripts
+pytest>=8.0.0                # T1 (LLD §14): tests/test_scoring.py, no cluster needed

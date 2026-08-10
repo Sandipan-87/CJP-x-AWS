@@ -352,7 +352,7 @@ class Database:
         return await self._read(
             """
             SELECT i.item_id, i.class, i.content, i.provenance, i.status,
-                   i.created_at, i.updated_at,
+                   i.entity_id, i.created_at, i.updated_at,
                    p.confidence, p.status AS procedure_status,
                    p.outcome_stats
             FROM memory_items i

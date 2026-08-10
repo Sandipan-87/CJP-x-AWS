@@ -33,3 +33,11 @@ jobs:
         env:
           ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
         run: python scripts/smoke_test_db.py --sslrootcert "$(pwd)/cluster-ca.crt"
+
+      - name: Run the recall + scoring smoke test
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+        run: python scripts/smoke_test_recall.py --sslrootcert "$(pwd)/cluster-ca.crt"
+
+      - name: Run scoring unit tests (T1, no cluster needed)
+        run: pytest tests/test_scoring.py -v

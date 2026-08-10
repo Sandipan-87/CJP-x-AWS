@@ -104,38 +104,37 @@ PHASE 0 — CLOSED 2026-08-11. PHASE 1 — STARTED same day (P1-P1 migrations
 written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
    (4 migration files) for the first time this project.
-DONE  Phase 0 exit gate PASS (P0-P1 + P0-B1 both legs + license, see archived
-      block below) · P1-P1 migrations 001-004 written, **001 + 002 APPLIED to
-      the live memory cluster** · **`agent/memory/db.py` WRITTEN AND VERIFIED
-      LIVE, 2026-08-11** — user connected via VPN (local squid block bypassed
-      client-side), smoke test ran against the real memory cluster: **29/29
-      checks PASS** (`scripts/smoke_test_db.py`) after 3 real bugs surfaced
-      and were fixed (Windows event-loop policy; an uncommitted `configure`
-      callback parking every pooled connection in `INTRANS`; a caught
-      `UniqueViolation` leaving the txn aborted for the recovery `SELECT`;
-      `audit_replay`'s per-statement `AS OF SYSTEM TIME` raised
-      `FeatureNotSupported: inconsistent timestamp` on a reused pooled
-      connection — fixed to CockroachDB's own suggested `SET TRANSACTION AS
-      OF SYSTEM TIME` pattern). This is now measured working code, not just
-      import-checked. `agent/errors.py` + `requirements.txt` also land.
-OPEN (non-gating)  003 (vector index) and 004 (checkpoint TTL) NOT YET
-      applied — both have real prerequisites (seed corpus; `saver.setup()`)
-      that haven't happened yet, so this is correct sequencing, not a gap.
-      S3 bucket `engram-agent-artifacts` does not exist yet — IAM auth
-      verified, `s3:CreateBucket` correctly denied, bucket needs a manual
-      console step (§8 row 7). 26257 is open right now only because of the
-      user's VPN — treat it as still blocked by default, not fixed.
+DONE  Phase 0 exit gate PASS (P0-P1 + P0-B1 both legs + license) · P1-P1
+      migrations 001-004 written, **001 + 002 APPLIED live** ·
+      **`agent/memory/db.py`, `scoring.py`, `recall.py` all WRITTEN AND
+      VERIFIED LIVE, 2026-08-11** — `smoke_test_db.py` 29/29, `smoke_test_
+      recall.py` 10/10, `tests/test_scoring.py` 14/14 (T1, LLD §14) — all
+      against the real memory cluster / pure functions, not import-checked
+      guesses. Real bugs found and fixed live, not shipped (Windows event-
+      loop policy, an uncommitted pool `configure` callback, a caught
+      `UniqueViolation` leaving a txn aborted, `audit_replay`'s AOST
+      pattern — full detail in the session entries below). S3 bucket
+      **created** (user, via console).
+OPEN (non-gating)  S3 bucket exists but the IAM user has no `PutObject`/
+      `GetObject` grant on it yet (§8 row 7) — separate AWS action from
+      creation, still manual. Migrations 003 (vector index) and 004
+      (checkpoint TTL) NOT YET applied — real prerequisites (seed corpus;
+      `saver.setup()`) haven't happened, correct sequencing not a gap.
+      26257 is open right now only because of the user's VPN — treat it as
+      still blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/memory/leases.py` (retry/backoff/jitter policy wrapping `db.py`'s single-attempt lease methods) or `agent/memory/recall.py` (the only ANN call site) — whichever the demo path needs first; (2) create the `engram-agent-artifacts` S3 bucket via AWS console (manual — §8 row 7); (3) migrations 003/004 once their prerequisites (seed corpus; LangGraph `saver.setup()`) are in place.
+**Next action, in order:** (1) `agent/memory/leases.py` (retry/backoff/jitter policy wrapping `db.py`'s single-attempt lease methods) — the last piece invariant #5 needs before a graph node can safely hold a task; (2) attach the missing S3 IAM policy (manual — §8 row 7); (3) `agent/providers/cohere_embed.py` (unblocks a real embed→recall round-trip, not just a pre-embedded-vector one); (4) migrations 003/004 once their prerequisites are in place.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 14 · S3 bucket created (IAM grant still pending); archived the SSL-saga changelog bloat; wrote + live-verified `scoring.py`/`recall.py`.** User created the `engram-agent-artifacts` bucket via console — `verify_s3.py` now fails one step later (`AccessDenied` on `PutObject`, not `NoSuchBucket`): bucket creation and IAM policy are separate AWS actions, only the first is done (`docs/blocked-register.md` §7, new evidence in `docs/phase0-verification.md` §3.5). **Doc cleanup:** moved Sessions 9–11's verbose migration/SSL-debugging entries to `docs/changelog-archive.md` verbatim (same "moved, never deleted" pattern as Sessions 1–3) and replaced them with one condensed pointer in this file — ~4KB smaller, nothing actually lost; Sessions 12–13 stayed in full since they're delivered code and real bug fixes, not workaround narrative. **New code:** `agent/memory/scoring.py` (LLD §6.6's four pure re-rank functions) and `agent/memory/recall.py` (ANN→hybrid-rerank→bundle, sitting on top of `db.py`'s `recall_ann`). **Deviation stated up front, not hidden:** the LLD's `hybrid(item, incident, ...)` signature uses duck-typed objects never defined elsewhere in the doc, and `item.entities` as a *set* doesn't match the schema (`memory_items.entity_id` is a single FK) — rewrote `hybrid()` with explicit scalar/set keyword args, same math and hard filters, no invented object type; `recall.py`'s docstring records the resulting limitation (an item has 0–1 entities, not a set). Added `db.get_candidate_details()`'s missing `entity_id` column (needed by the affinity term) — a one-line, surgical addition to already-shipped code. **Verified, not just written:** `tests/test_scoring.py` (T1, LLD §14) — 14/14 pass, pure functions, no cluster; `scripts/smoke_test_recall.py` (new) — 10/10 pass against the live memory cluster (VPN still up from Session 13), seeding two real 1024-dim vectors and confirming `recall_ann` orders correctly, `get_candidate_details` returns the new `entity_id` column, and the full `recall()` pipeline hard-filters/scores/ranks correctly end-to-end. Both smoke tests wired into `.github/workflows/db-smoke-test.yml` for when the VPN isn't available. **Not done:** `agent/memory/leases.py` (retry/backoff policy) and `agent/providers/cohere_embed.py` (so `recall()` can take raw incident text instead of a precomputed vector) — next chunks.
 
 **2026-08-11 — Session 13 · VPN opened local 26257; `agent/memory/db.py` verified LIVE, 3 real bugs found and fixed.** User connected via VPN — confirmed by a raw TCP `socket.create_connection` to the memory cluster's :26257 succeeding locally, where it failed all of Sessions 9-12. Fetched the cluster's CA cert locally (same public endpoint as the GitHub Actions workflows) and ran `scripts/smoke_test_db.py` directly against the live cluster instead of round-tripping through Actions. **First run failed 3 times in a row, each a real, previously-invisible bug — none were shipped:** (1) `psycopg` async cannot use Windows' default `ProactorEventLoop` — fixed by setting `WindowsSelectorEventLoopPolicy` in the script's entrypoint (Linux runners never hit this, so `db-smoke-test.yml` didn't need the fix, only local Windows dev does); (2) `Database.connect()`'s pool `configure` callback executed `SET statement_timeout` but never committed, leaving every new pooled connection parked `INTRANS`, silently discarded by the pool's health check — `pool.open()` timed out with no clue why until traced; fixed with an explicit `await conn.commit()` in `configure`; (3) both idempotent-insert methods (`insert_task`'s incident dedupe, `insert_remediation_action`'s exactly-once path) caught `UniqueViolation` and immediately ran a recovery `SELECT` on the same cursor — but a caught error leaves a CockroachDB transaction aborted, so the `SELECT` itself failed `InFailedSqlTransaction`; fixed with `await cur.connection.rollback()` before the recovery query in both places. Even after those three, `audit_replay` still failed: putting a separate `AS OF SYSTEM TIME` clause on each of 3 SELECTs raised `FeatureNotSupported: inconsistent AS OF SYSTEM TIME timestamp` on a reused pooled connection — CockroachDB's own error HINT named the fix (`SET TRANSACTION AS OF SYSTEM TIME`), so `audit_replay` was rewritten to pin the timestamp once per transaction and run plain reads inside it, matching CockroachDB's documented multi-statement AOST pattern instead of repeating the clause. **Result: 29/29 checks pass against the real memory cluster** — every DAO method, the lease acquire/renew/stale-fence/takeover/release sequence (including a simulated `stop-task` reclaim), the idempotency paths, and belief-state replay are now measured working, not just import-checked. Test data cleaned up via `ON DELETE CASCADE` from its own disposable `scope_id`/`task_id`, confirmed nothing left behind. **Not a fix to the network block itself** — the squid proxy is unchanged; the VPN is this session's convenience, not a standing state, so `CLAUDE.md` §8 row 3 says so explicitly rather than implying 26257 is generally open now.
 
