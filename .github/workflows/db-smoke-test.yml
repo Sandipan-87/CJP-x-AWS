@@ -98,8 +98,13 @@ jobs:
           ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}
         run: python scripts/smoke_test_recipe_renderer.py --target-sslrootcert "$(pwd)/target-ca.crt"
 
-      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings/Ollama mocks + observe/sql_probe/graph/reason/recipe_renderer helpers, no cluster/secrets needed)
+      - name: Run the gate NODE smoke test (real concurrent approval, rejection, idempotent reconciliation)
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+        run: python scripts/smoke_test_gate_node.py --sslrootcert "$(pwd)/cluster-ca.crt"
+
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings/Ollama mocks + observe/sql_probe/graph/reason/recipe_renderer/gate helpers, no cluster/secrets needed)
         run: >
           pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py
           tests/test_sql_probe.py tests/test_graph.py tests/test_ollama_cloud_llm.py tests/test_reason.py
-          tests/test_recipe_renderer.py -v
+          tests/test_recipe_renderer.py tests/test_gate.py -v

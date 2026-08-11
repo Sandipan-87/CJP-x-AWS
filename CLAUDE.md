@@ -106,34 +106,42 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
       APPLIED live · S3 fully closed · full memory layer + both providers +
-      `sql_probe.py` + the graph through `reason` (`observe → recall →
-      reason → END`) all WRITTEN AND VERIFIED LIVE — detail + every bug
-      found/fixed along the way is in the §7 changelog entries, not
-      restated here every session.
-      **`agent/tools/recipe_renderer.py` WRITTEN AND VERIFIED LIVE,
-      2026-08-11 — LLD §10's "single most important safety control."**
-      Full 5-step validation pipeline (allowlist → real-schema cross-check
-      → identifier regex → forbidden-keyword/multi-statement guard →
-      idempotency) implemented exactly as specified. Step 2 ("no fabricated
-      objects," LLD names MCP `get_table_schema`, which doesn't exist) uses
-      a NEW `SqlProbe.get_table_columns()` (real `information_schema` query
-      on the target cluster) instead — same real signal, different access
-      path, and if no schema is supplied at all the check is SKIPPED, not
-      silently passed (`RenderedRecipe.schema_checked` records which).
-      `ActionKind` reused from `agent.schemas` (Session 22), not redefined.
-      **26/26 unit tests** covering every validation step individually
-      (injection attempts, fabricated columns, non-idempotent output, every
-      identifier-regex edge case) **+ 8/8 live**, first run, no bugs: real
-      scenario table on the target cluster, real columns fetched via
-      `information_schema`, a genuine fabricated column REJECTED against
-      that real data, not a mocked schema. **Product decision 2026-08-11:**
-      `memory_items`' one-row-per-sweep is intentional episode history —
-      do not dedup it. 95 unit tests + 112 live checks total now pass.
-OPEN (non-gating)  No checkpointer wired — kill-and-resume already lives
-      entirely in `agent/memory/leases.py` (proven independently); this is
-      additive, not a prerequisite. `gate`/`act_measure` don't exist yet,
-      so nothing calls `recipe_renderer.render()` from inside the graph —
-      it's written and proven standalone, wiring it in is the next node.
+      `sql_probe.py` + `recipe_renderer.py` + the graph through `reason`
+      all WRITTEN AND VERIFIED LIVE — detail + every bug found/fixed along
+      the way is in the §7 changelog entries, not restated here every
+      session.
+      **`agent/nodes/gate.py` WRITTEN AND VERIFIED LIVE, 2026-08-11 — LLD
+      §5.4, invariant #6's "one txn."** `db.py` gained
+      `insert_gate_decision`: `decisions(intent)` + `remediation_actions
+      (proposed)` + `approvals(pending)` in ONE `pool.connection()`
+      checkout — but SELECT-first for the idempotency-key check, not the
+      usual INSERT-then-catch-UniqueViolation pattern, because a violation
+      on the SECOND insert here would roll back the FIRST one too (the
+      decisions row already in the same transaction); safe against races
+      because invariant #5's lease already guarantees one holder per task.
+      Steps 2 (SSE push) and 5 (telemetry) skipped — no dashboard/telemetry
+      sink exists. **10/10 unit tests** (idempotency-key helper + scripted
+      approve/reject/expire control flow via a fake DB — deterministic,
+      no real timers) **+ 7/7 live**, first run except one test-only UUID/
+      str comparison bug (caught and fixed in the test, not the code):
+      a REAL concurrent "approval" written to the DB while `gate()` was
+      actually polling in real time; a real rejection that left a genuine
+      `remediation_actions.status='skipped'` row and a real episode
+      `memory_items` row, confirmed by direct query; a real second call
+      with the same idempotency key reconciling onto the existing action
+      instead of writing a duplicate ledger entry. `recipe_renderer.py` is
+      not yet wired into `agent/graph.py` — `gate` exists as a callable
+      node, proven standalone, same as `recipe_renderer` was last session.
+      **Product decision 2026-08-11:** `memory_items`' one-row-per-sweep is
+      intentional episode history — do not dedup it. 105 unit tests + 119
+      live checks total now pass.
+OPEN (non-gating)  `agent/graph.py` still ends at `reason` → END — `gate`
+      isn't wired into the compiled graph yet, same "written and proven
+      standalone, not yet connected" pattern as `recipe_renderer` last
+      session. No checkpointer wired — kill-and-resume already lives
+      entirely in `agent/memory/leases.py` (proven independently), additive
+      not a prerequisite. `act_measure`/`agent/tools/sql_operator.py` don't
+      exist, so nothing ever applies the rendered SQL for real yet.
       Migrations 003/004 still blocked on real prerequisites, not a gap.
       `ENGRAM_TARGET_PROBE_DSN` still not provisioned. MCP/CloudWatch/
       ccloud legs of `observe(node)` step 1 still unimplemented. 26257 is
@@ -143,13 +151,15 @@ BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/nodes/gate.py` (LLD §5.4 — ledger txn + `remediation_actions`/`approvals` rows + approval poll, the next real node, now that `recipe_renderer.py` exists to render the SQL it stores); (2) `AsyncCockroachDBSaver` bootstrap (closes the "no checkpointer" gap, unblocks migration 004); (3) provision `ENGRAM_TARGET_PROBE_DSN` on the target cluster (manual); (4) `agent/tools/sql_operator.py` (LLD §7 — the actual DDL-applying adapter `act_measure(node)` will need once `gate` exists).
+**Next action, in order:** (1) `agent/tools/sql_operator.py` (LLD §7 — the allowlisted-DDL adapter `act_measure(node)` needs to actually apply `recipe_renderer`'s rendered SQL); (2) `agent/nodes/act_measure.py` (LLD §5.5 — the ledger-first apply+measure protocol, ADR-004; the last node the design names); (3) wire `gate` (and eventually `act_measure`) into `agent/graph.py`, replacing the `reason → END` edge; (4) `AsyncCockroachDBSaver` bootstrap; (5) provision `ENGRAM_TARGET_PROBE_DSN` (manual).
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 24 · Wrote + live-verified `agent/nodes/gate.py` — invariant #6's "one txn" ledger gate.** `db.py` gained `insert_gate_decision`: `decisions(intent)` + `remediation_actions(proposed)` + `approvals(pending)` in ONE transaction, per LLD §5.4 step 1. **Deliberately different reconciliation strategy from every prior composite write in this repo, explained not just applied:** `insert_incident_observation` and the standalone `insert_task`/`insert_remediation_action` all catch a `UniqueViolation` after attempting the insert, because each of those inserts exactly one row that could conflict — a caught violation only ever needs to roll back that one statement. Here, three inserts share one transaction, so a violation on the *second* one (remediation_actions) would roll back the *first* (decisions) too. Checking `idempotency_key` with a SELECT before inserting anything avoids ever being in that position — safe against races because invariant #5's lease already guarantees exactly one holder calls `gate()` for a given task at a time, so the SELECT-then-INSERT gap is not exploitable in this system's actual concurrency model. Scoped `gate(node)` to LLD §5.4 steps 1/3/4 — step 2 (SSE push) and step 5 (telemetry) skipped, no dashboard/telemetry sink exists; `blocked_by_backup_gate` is actually `act_measure`'s own metric despite being named in gate's list, computed one node later once that node exists. A still-`pending` approval at the poll deadline is marked `expired` by `gate(node)` itself via the existing `decide_approval` CAS — no new DB method needed for that. **10/10 unit tests**: idempotency-key helper (order-independence, cluster/parameter sensitivity) plus a scripted fake `Database` proving the approve/reject/expire control flow deterministically, including the exact number of polls and real (tiny) sleep timing for the expiry path — no real cluster needed. **7/7 live**, and — accurately — not first-run-clean: one assertion failed on the first pass due to comparing a `str` (from `insert_gate_decision`'s return) against a raw `uuid.UUID` (from a direct DB read) with `==`, which Python never considers equal regardless of value; fixed the *test's* comparison, not the underlying code, which was already correct. The live run proves three real things a mock couldn't: a genuine concurrent "approval" written to the DB while `gate()` was actually polling in real wall-clock time (not pre-seeded before the call); a real rejection leaving a genuine `status='skipped'` row and a real episode `memory_items` row, both confirmed by direct query afterward; and a real second `insert_gate_decision` call with the same idempotency key reconciling onto the existing action instead of writing a duplicate ledger entry. **`gate` is not yet wired into `agent/graph.py`** — same "written and proven standalone, not yet connected" position `recipe_renderer.py` was left in last session; the graph still ends at `reason` → END. **105 unit tests + 119 live checks now pass in total.**
 
 **2026-08-11 — Session 23 · Wrote + live-verified `agent/tools/recipe_renderer.py` — LLD §10's safety core.** Implemented the full 5-step validation pipeline exactly as specified: allowlist check, real-schema cross-check, identifier regex, forbidden-keyword/multi-statement guard, idempotency. Step 2 ("cross-checked against MCP `get_table_schema`, no fabricated objects") again hits the same recurring gap as `observe`/`reason` — MCP doesn't exist — so a new `SqlProbe.get_table_columns()` method (real `information_schema.columns` query against the target cluster) substitutes: same real signal, different access path. **Stated, not silently assumed:** if a caller doesn't supply `known_columns` at all, step 2 is explicitly SKIPPED and `RenderedRecipe.schema_checked=False` records that fact on the result — a fabricated column only gets caught when real schema data is actually provided, and the function is honest about which happened rather than implying step 2 always ran. Reused `ActionKind` from `agent.schemas` (added last session) rather than redefining a second competing enum, even though the LLD's own shown snippet uses uppercase member names — the wire *values* (`"create_index"`/`"analyze_table"`) match exactly, which is what actually matters; only the Python-side member-name casing differs, a cosmetic note not a functional one. Pure, synchronous, dependency-free by design — the safety core shouldn't need a live connection to prove it rejects a bad proposal. **26/26 unit tests**, covering every validation step individually including several real injection-attempt strings (`"orders; DROP TABLE users"`, etc.) and every identifier-regex edge case. **8/8 live**, first run, no bugs: built a real scenario table on the target cluster, fetched its actual columns via `information_schema`, then proved a genuinely fabricated column gets rejected against that real data (not a mocked schema), and that a nonexistent table's `None` column set is treated as a hard rejection, not an empty-but-valid table. **95 unit tests + 112 live checks now pass in total.**
 

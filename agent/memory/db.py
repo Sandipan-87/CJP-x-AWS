@@ -774,6 +774,104 @@ class Database:
         )
         return rows[0] if rows else None
 
+    async def insert_gate_decision(
+        self,
+        task_id: str,
+        scope_id: str,
+        target_cluster_id: str,
+        *,
+        model_id: str,
+        reasoning: dict,
+        citations: list[dict] | None,
+        action_kind: str,
+        recipe_version: str,
+        parameters: dict,
+        rendered_sql: str,
+        idempotency_key: str,
+        channel: str | None = None,
+    ) -> tuple[str | None, str, str]:
+        """LLD §5.4 step 1 / invariant #6: "decisions(intent) +
+        remediation_actions(proposed) + approvals(pending)" in ONE
+        transaction. Same physical pattern as `insert_incident_observation`
+        (§5.1) — several statements inside ONE `pool.connection()`
+        checkout, no nested `conn.transaction()`.
+
+        Checks for an existing `idempotency_key` BEFORE inserting anything
+        (SELECT-first, not INSERT-then-catch) — deliberately different from
+        `insert_task`/`insert_remediation_action`'s catch-a-UniqueViolation
+        pattern: those insert exactly ONE row, so a caught violation only
+        ever needs to roll back that one statement. Here, a violation on
+        the SECOND insert (remediation_actions) would roll back the FIRST
+        one too (the decisions row already in the same transaction) —
+        checking first avoids ever being in that position, and is safe
+        against races because invariant #5's lease already guarantees only
+        one holder calls `gate()` for a given task at a time.
+
+        Returns `(decision_id, action_id, approval_id)` — `decision_id` is
+        `None` when reconciling onto an already-existing action (no NEW
+        decision was made, LLD §6.1's DAO table: "never work around a
+        uniqueness violation; reconcile against reality").
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT action_id FROM remediation_actions WHERE idempotency_key = %s",
+                    (idempotency_key,),
+                )
+                existing_action = await cur.fetchone()
+
+                if existing_action is not None:
+                    action_id = str(existing_action["action_id"])
+                    await cur.execute(
+                        "SELECT approval_id FROM approvals WHERE action_id = %s LIMIT 1",
+                        (action_id,),
+                    )
+                    existing_approval = await cur.fetchone()
+                    if existing_approval is not None:
+                        return None, action_id, str(existing_approval["approval_id"])
+                    # Action exists but no approval row — only possible if a prior
+                    # gate() call crashed between the two inserts. Add just the
+                    # missing approval; still no new decision.
+                    await cur.execute(
+                        "INSERT INTO approvals (task_id, action_id, channel) VALUES (%s, %s, %s) "
+                        "RETURNING approval_id",
+                        (task_id, action_id, channel),
+                    )
+                    approval_id = str((await cur.fetchone())["approval_id"])
+                    return None, action_id, approval_id
+
+                await cur.execute(
+                    """
+                    INSERT INTO decisions (task_id, scope_id, node, model_id, reasoning, citations)
+                    VALUES (%s, %s, 'gate', %s, %s, %s)
+                    RETURNING decision_id
+                    """,
+                    (task_id, scope_id, model_id, Jsonb(reasoning), Jsonb(citations or [])),
+                )
+                decision_id = str((await cur.fetchone())["decision_id"])
+
+                await cur.execute(
+                    """
+                    INSERT INTO remediation_actions
+                        (task_id, scope_id, target_cluster_id, action_kind, recipe_version,
+                         parameters, rendered_sql, idempotency_key, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'proposed')
+                    RETURNING action_id
+                    """,
+                    (task_id, scope_id, target_cluster_id, action_kind, recipe_version,
+                     Jsonb(parameters), rendered_sql, idempotency_key),
+                )
+                action_id = str((await cur.fetchone())["action_id"])
+
+                await cur.execute(
+                    "INSERT INTO approvals (task_id, action_id, channel) VALUES (%s, %s, %s) "
+                    "RETURNING approval_id",
+                    (task_id, action_id, channel),
+                )
+                approval_id = str((await cur.fetchone())["approval_id"])
+
+        return decision_id, action_id, approval_id
+
     # -------------------------------------------------------------- procedures
 
     async def update_procedure_stats(self, procedure_id: str, success: bool) -> None:
