@@ -134,30 +134,51 @@ DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
       ~5.9s **over a home VPN tunnel to both Cohere and CockroachDB** —
       not representative of the real ECS-Fargate-same-region path the
       `<8s` demo budget assumes; flagged, not treated as a red flag.
-      23 unit tests + 74 live checks total now pass.
+      **`agent/nodes/observe.py` WRITTEN AND VERIFIED LIVE, same day** —
+      §5.1 steps 2-4 (fingerprint, deterministic anomaly rule, one-txn
+      write); step 1 ("Collect: MCP/probe SQL/CloudWatch/ccloud")
+      deliberately NOT implemented — no tool adapters exist yet, so
+      `ProbeResult` takes an already-collected signal instead of inventing
+      adapter interfaces speculatively. **`db.py` gained
+      `insert_incident_observation`** — a dedicated composite method
+      (task + observation + entity in ONE `pool.connection()` checkout,
+      LLD's own "one txn" requirement) rather than a generic transaction
+      framework; inlines `insert_task`'s incident-dedupe so the rollback it
+      needs stays on the same connection as the writes that follow.
+      `scripts/smoke_test_observe_node.py`, 9/9 against real Cohere + the
+      live cluster, first run, no bugs: two sweeps with the same query
+      correctly dedupe onto ONE task via `tasks_active_incident_idx`, the
+      second sweep's embedding is a cache hit not a fresh Cohere call, and
+      both observation rows land under the one task. **Noted, not fixed:**
+      `memory_items` gets one row per sweep for a recurring fingerprint —
+      the embedding is cached (D9) but the row itself isn't deduped;
+      unspecified by the LLD, may be intentional (episode history) or may
+      warrant a future dedup — flagged for a product decision, not silently
+      resolved either way. 35 unit tests + 83 live checks total now pass.
 OPEN (non-gating)  Migrations 003 (vector index) and 004 (checkpoint TTL)
       NOT YET applied — real prerequisites (seed corpus; `saver.setup()`)
       haven't happened, correct sequencing not a gap. `agent/providers/
       base.py` still has no `LLMProvider` ABC (lands with
       `ollama_cloud_llm.py`, deliberately deferred). No `agent/graph.py`
-      yet — `recall(node)` is written and callable but nothing assembles a
-      `StateGraph` around it; `observe(node)` doesn't exist either, so the
-      "text to embed comes from `observations[].payload['text']`"
-      assumption in `agent/state.py`/`agent/nodes/recall.py` is untested
-      against a real `observe(node)` implementation. 26257 is open right
-      now only because of the user's VPN — treat it as still blocked by
-      default, not fixed.
+      yet — `observe(node)` and `recall(node)` are both written and
+      callable but nothing assembles a `StateGraph` around them; step 1 of
+      `observe(node)` (actually collecting a probe signal via MCP/ccloud/
+      CloudWatch) is still unimplemented, so nothing calls either node from
+      a real trigger yet. 26257 is open right now only because of the
+      user's VPN — treat it as still blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/nodes/observe.py` — the other half of the assumption `recall.py` currently makes about `observations[].payload['text']`, and the node that actually creates a task/incident in the first place; (2) `agent/graph.py` (LangGraph `StateGraph` assembly — the first real dependency on the `langgraph` package) once at least two nodes exist to wire together; (3) migrations 003/004 once their prerequisites are in place; (4) `agent/config.py` (pydantic-settings, LLD §2) — several modules still read raw env vars directly as a stated, temporary simplification.
+**Next action, in order:** (1) `agent/graph.py` (LangGraph `StateGraph` assembly — the first real dependency on the `langgraph` package, now that two nodes exist to wire together); (2) `agent/tools/sql_probe.py` or `agent/tools/mcp_tool.py` — whichever unblocks `observe(node)`'s step 1 first, since every other node depends transitively on a real probe signal existing; (3) migrations 003/004 once their prerequisites are in place; (4) `agent/config.py` (pydantic-settings, LLD §2) — several modules still read raw env vars directly as a stated, temporary simplification.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 19 · Wrote + live-verified `agent/nodes/observe.py` — the second LangGraph node.** Scoped deliberately to §5.1 steps 2-4 (fingerprint, deterministic anomaly rule, one-txn write) — step 1, "Collect: MCP/probe SQL/CloudWatch/ccloud," is NOT implemented: none of those tool adapters exist, and inventing their interfaces now with nothing to call would be speculative. `ProbeResult` is what a future collection step is expected to hand this function; `observe(node)` starts from an already-collected signal, exactly the same pattern `recall(node)` used for `db`/`embed_provider` last chunk. **A real design gap surfaced and was closed, not routed around:** LLD §5.1 step 4 explicitly wants "one txn" across `tasks`+`observations`+`entities`, but `db.py`'s existing methods each open their own connection/transaction — composing three separate calls would NOT have been atomic. Rather than build a generic multi-statement transaction API (speculative — nothing else needs it yet), added one purpose-built composite method, `insert_incident_observation`, matching the exact pattern already proven in `_acquire_or_takeover` (several statements inside one `pool.connection()` checkout, no nested `conn.transaction()`) and inlining `insert_task`'s incident-dedupe logic so its rollback-then-continue stays on the same connection as the writes that follow it. `tests/test_observe.py`: 12 unit tests for the pure helpers (`normalize_query_text`, `fingerprint`, `is_anomaly`) — no cluster needed. `scripts/smoke_test_observe_node.py`, 9/9 against real Cohere + the live cluster, **first run, no bugs**: two sweeps with the identical (normalized) query correctly dedupe onto ONE task via `tasks_active_incident_idx`, the second sweep's embedding is a cache hit not a fresh Cohere call, and both observation rows land under the one task in the DB, confirmed by direct query. **One thing flagged rather than silently decided:** `memory_items` gets a new row per sweep for a recurring fingerprint — the embedding itself is cached (D9), but the row is not deduplicated at that layer. The LLD doesn't specify whether that's intentional (an episode-history record per occurrence) or an oversight; recorded as an open product question, not resolved either way by assumption. **35 unit tests + 83 live checks now pass in total.**
 
 **2026-08-11 — Session 18 · Wrote + live-verified `agent/nodes/recall.py` — the first LangGraph node.** **Found and fixed a real bug in yesterday's `embeddings.py` before it could bite twice:** the cache key was `sha256(text)` alone, with no `input_type` folded in — but Cohere's `search_document` and `search_query` embeddings of the *same text* are deliberately different vectors, so a later cross-type lookup would have silently returned the wrong one, exactly the "collapsing input_type degrades recall silently" failure invariant #9 already warns about, just relocated into the cache. Fixed inside `embeddings.py` alone (hash now includes `input_type`) — no migration needed, nothing seeded yet (invariant #1 makes this cheap right now, not after). Added a permanent regression check to `smoke_test_embeddings.py` proving the two input types no longer collide (13/13, up from 10/10). Wrote `agent/state.py` (`AgentState`/`Observation`/`RecallBundle` — `proposal`/`approval`/`action`/`measurement`/`error` deliberately left as `dict | None` placeholders rather than inventing `Proposal`/`Approval`/etc. before `reason`/`gate`/`act_measure` exist to check them against) and `agent/nodes/recall.py` (LLD §5.2: embed → ANN → hybrid re-rank → context bundle, persisting a real `decisions(node='recall')` audit row) — a plain async function matching LangGraph's node contract, no dependency on the `langgraph` package itself yet. **Stated, not hidden:** the text to embed comes from `observations[].payload["text"]`, an interface assumption between this node and the not-yet-written `observe(node)` — only one function needs to change if that key turns out wrong. **A second real bug caught live:** `SET vector_search_beam_size = %s` doesn't accept a bind parameter in CockroachDB (needs a literal) — same class of issue as the earlier `INTERVAL` fix in the lease code, caught because this was the first call to ever pass a `beam` value (the recall-node test does; the plain DAO smoke test never had). Fixed with an `int()`-validated f-string. `scripts/smoke_test_recall_node.py`, 11/11 against real Cohere + the live cluster: seeds a real "incident #1" memory item, the recall node finds it, hybrid-scores it, writes the audit row, and a cold-start call (no observation text yet) returns a clean miss instead of raising. Measured latency ~5.9s — over a home VPN tunnel to both Cohere and CockroachDB, explicitly **not** representative of the real same-region Fargate path the `<8s` demo budget assumes; recorded as a caveat, not a red flag. **23 unit tests + 74 live checks now pass in total.**
 

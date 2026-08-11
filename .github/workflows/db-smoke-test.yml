@@ -59,5 +59,11 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
         run: python scripts/smoke_test_recall_node.py --sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks, no cluster/secrets needed)
-        run: pytest tests/test_scoring.py tests/test_cohere_embed.py -v
+      - name: Run the observe NODE smoke test (agent/nodes/observe.py, incident dedupe)
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: python scripts/smoke_test_observe_node.py --sslrootcert "$(pwd)/cluster-ca.crt"
+
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks + observe helpers, no cluster/secrets needed)
+        run: pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py -v

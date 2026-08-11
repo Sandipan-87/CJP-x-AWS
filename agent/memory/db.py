@@ -282,6 +282,96 @@ class Database:
             row = await cur.fetchone()
             return str(row["entity_id"])
 
+    async def insert_incident_observation(
+        self,
+        scope_id: str,
+        task_type: str,
+        trigger: str,
+        *,
+        target_cluster_id: str,
+        incident_fingerprint: str | None,
+        source: str,
+        kind: str,
+        payload: dict,
+        entity_kind: str,
+        entity_name: str,
+        entity_attributes: dict | None = None,
+    ) -> tuple[str, str, str]:
+        """LLD §5.1 step 4: "One txn: INSERT tasks(incident) + INSERT
+        observations (fingerprint, payload) + upsert entities." A dedicated
+        composite method, not a generic multi-statement transaction API —
+        db.py stays a flat DAO; observe(node) is the one place three tables
+        need to move together, so it gets one purpose-built method instead
+        of speculative general machinery nothing else needs yet.
+
+        Same pattern as `_acquire_or_takeover` (LLD §6.4): several
+        statements inside ONE `pool.connection()` checkout, no explicit
+        `conn.transaction()` — the pool's own connection() context commits
+        on clean exit / rolls back on exception, which is what makes this
+        atomic. `insert_task`'s incident-dedupe (UniqueViolation -> existing
+        task_id) is inlined here rather than called as a sub-method, so the
+        rollback-then-continue it needs stays on the SAME connection as the
+        observation/entity writes that follow.
+
+        Returns (task_id, observation_id, entity_id).
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                try:
+                    await cur.execute(
+                        """
+                        INSERT INTO tasks (scope_id, task_type, trigger, target_cluster_id,
+                                           incident_fingerprint)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING task_id
+                        """,
+                        (scope_id, task_type, trigger, target_cluster_id, incident_fingerprint),
+                    )
+                    task_id = str((await cur.fetchone())["task_id"])
+                except psycopg.errors.UniqueViolation:
+                    await cur.connection.rollback()  # see insert_task's identical fix (Session 13)
+                    await cur.execute(
+                        """
+                        SELECT task_id FROM tasks
+                        WHERE target_cluster_id = %s AND incident_fingerprint = %s
+                          AND status IN ('pending','running','awaiting_approval','blocked')
+                        LIMIT 1
+                        """,
+                        (target_cluster_id, incident_fingerprint),
+                    )
+                    row = await cur.fetchone()
+                    if row is None:  # pragma: no cover — race resolved between insert and select
+                        raise
+                    task_id = str(row["task_id"])
+
+                await cur.execute(
+                    """
+                    INSERT INTO observations (scope_id, task_id, target_cluster_id,
+                                               source, kind, fingerprint, payload)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING observation_id
+                    """,
+                    (scope_id, task_id, target_cluster_id, source, kind,
+                     incident_fingerprint, Jsonb(payload)),
+                )
+                observation_id = str((await cur.fetchone())["observation_id"])
+
+                await cur.execute(
+                    """
+                    INSERT INTO entities (scope_id, kind, name, attributes)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (scope_id, kind, name) DO UPDATE
+                      SET attributes = excluded.attributes,
+                          last_seen_at = now(),
+                          version = entities.version + 1
+                    RETURNING entity_id
+                    """,
+                    (scope_id, entity_kind, entity_name, Jsonb(entity_attributes or {})),
+                )
+                entity_id = str((await cur.fetchone())["entity_id"])
+
+        return task_id, observation_id, entity_id
+
     # ------------------------------------------------------------- memory_items
 
     async def insert_memory_item(
