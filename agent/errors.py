@@ -4,9 +4,11 @@ Grown incrementally as each module needs one. `StaleLeaseError` is raised by
 `agent/memory/db.py` (§6.1); `LeaseAcquireTimeoutError` by `agent/memory/
 leases.py` (§6.4's retry/backoff policy layer); `EmbeddingProviderError` and
 `EmbeddingDimensionError` by `agent/providers/cohere_embed.py` (§7);
-`LlmRateLimitError`/`LlmTimeoutError` by `agent/providers/ollama_cloud_llm.py`
-and `LLMSchemaError` by `agent/nodes/reason.py` (§16). The rest of the
-taxonomy (`McpTimeoutError`, ...) lands with the modules that raise them.
+`LlmRateLimitError`/`LlmTimeoutError` by `agent/providers/ollama_cloud_llm.py`;
+`LLMSchemaError` by `agent/nodes/reason.py`; `SqlOperatorRejected` by
+`agent/tools/sql_operator.py`; `BackupGateBlocked` by `agent/nodes/
+act_measure.py` (§16). The rest of the taxonomy (`McpTimeoutError`, ...)
+lands with the modules that raise them.
 """
 
 from __future__ import annotations
@@ -105,3 +107,25 @@ class LLMSchemaError(EngramError):
     def __init__(self, errors: str) -> None:
         self.errors = errors
         super().__init__(f"Proposal schema validation failed after repair attempt: {errors}")
+
+
+class SqlOperatorRejected(EngramError):
+    """`SqlOperator.apply()`'s own independent re-validation rejected the
+    SQL it was asked to run — "renderer bug or privilege" (§16). This is
+    NOT the same check as `recipe_renderer`'s; it's a fresh, separate
+    implementation on purpose, so a bug in one validator can't silently
+    disable both layers of the safety core.
+    """
+
+
+class BackupGateBlocked(EngramError):
+    """§5.5 step 1: no recent-enough backup exists (or the check couldn't
+    be verified at all) — safe default is refuse, never proceed on an
+    unverified backup. Recovery per §16: park + alert; auto-retry next
+    sweep; a human can set `override_backup_gate=true` on the task
+    (recorded in `decisions`, auditable) to waive it — never silently.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"backup gate blocked: {reason}")

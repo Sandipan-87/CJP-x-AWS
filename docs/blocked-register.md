@@ -75,3 +75,19 @@ Recorded here and in `CLAUDE.md` as *missing* until 2026-08-10; that was wrong. 
 **Result.** `scripts/verify_s3.py`'s gate (auth + put + get/hash) **PASSES** — a real object round-tripped with a byte-identical sha256. Full transcript: `docs/phase0-verification.md` §3.6.
 
 **One known, deliberate gap, not a bug.** The policy grants only Put/Get, not Delete — the probe's own cleanup step correctly fails `AccessDenied`, leaving one small (60-byte) test object at `s3://engram-agent-artifacts/phase0-probes/verify_s3-44925853c594.txt`. Delete it via the console if desired; it's harmless either way, and least-privilege is working as intended (Delete was never asked for).
+
+---
+
+## 8 — Backup gate (`agent/tools/cloud_api.py`) has no live credential · [PLUMBER] · **OPEN — blocks live verification, not the code itself**
+
+**Symptom.** LLD §5.5 step 1's backup gate needs `GET /api/v1/clusters/{id}/backups` on the CockroachDB Cloud REST API, authenticated with a Cluster-Admin-scoped key (LLD §2: `CCLOUD_TOKEN`). No such key — or any Cloud API credential at all — exists in `.env`. This is the same class of gap as `ENGRAM_TARGET_PROBE_DSN`/`ENGRAM_TARGET_OPERATOR_DSN` (rows already noted elsewhere): a dedicated credential the design names but that was never actually provisioned.
+
+**What IS real evidence.** `fixtures/cloudapi-backups-basic.json`, captured 2026-08-03 against the live memory cluster on a fresh Basic plan: `200 {"backups": [], "pagination": null}`. This is genuine, previously-uncommitted evidence (see the `.gitignore` fix below) for exactly the "(a) empty list → refuse" case — the demo's own refusal beat.
+
+**What is NOT measured.** A non-empty response's shape (what field actually carries the completion timestamp) is assumed, not confirmed — no non-empty response has ever been captured against this account/tier. `agent/tools/cloud_api.py`'s `decide_backup_gate()` pure logic and `CloudApiAdapter`'s HTTP handling are both fully unit-tested (`tests/test_cloud_api.py`, 12/12) against the real empty-list fixture via a mocked transport — but the live network call itself has never run.
+
+**Consequence.** `agent/nodes/act_measure.py` cannot exercise the real backup-gate network path today; its own smoke test uses `override_backup_gate=True` (an audited, LLD-named escape hatch, not a workaround) to get past it.
+
+**Fix.** Provision a Cluster-Admin-scoped API key on the target cluster (CockroachDB Cloud console → Access → API Keys or similar) and add it as `CCLOUD_TOKEN` in `.env` (and as a `CCLOUD_TOKEN` GitHub repo secret, for the CI path). Re-run against a real `CloudApiAdapter` once available — a manual step, not something this session can self-provision.
+
+**Related fix, same session.** `.gitignore` had a blanket `fixtures/` rule — the SAME class of mistake as the old blanket `db/` rule (§6 above): both fixture files (`cloudapi-backups-basic.json`, `cloudapi-cluster-memory.json`) are real, valuable, previously-uncommitted evidence, checked for secrets and found to have none. Narrowed the rule; both files are now tracked.

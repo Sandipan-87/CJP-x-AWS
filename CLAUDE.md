@@ -106,58 +106,69 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
       APPLIED live · S3 fully closed · full memory layer + both providers +
-      `sql_probe.py` + `recipe_renderer.py` + the graph through `reason`
-      all WRITTEN AND VERIFIED LIVE — detail + every bug found/fixed along
-      the way is in the §7 changelog entries, not restated here every
-      session.
-      **`agent/nodes/gate.py` WRITTEN AND VERIFIED LIVE, 2026-08-11 — LLD
-      §5.4, invariant #6's "one txn."** `db.py` gained
-      `insert_gate_decision`: `decisions(intent)` + `remediation_actions
-      (proposed)` + `approvals(pending)` in ONE `pool.connection()`
-      checkout — but SELECT-first for the idempotency-key check, not the
-      usual INSERT-then-catch-UniqueViolation pattern, because a violation
-      on the SECOND insert here would roll back the FIRST one too (the
-      decisions row already in the same transaction); safe against races
-      because invariant #5's lease already guarantees one holder per task.
-      Steps 2 (SSE push) and 5 (telemetry) skipped — no dashboard/telemetry
-      sink exists. **10/10 unit tests** (idempotency-key helper + scripted
-      approve/reject/expire control flow via a fake DB — deterministic,
-      no real timers) **+ 7/7 live**, first run except one test-only UUID/
-      str comparison bug (caught and fixed in the test, not the code):
-      a REAL concurrent "approval" written to the DB while `gate()` was
-      actually polling in real time; a real rejection that left a genuine
-      `remediation_actions.status='skipped'` row and a real episode
-      `memory_items` row, confirmed by direct query; a real second call
-      with the same idempotency key reconciling onto the existing action
-      instead of writing a duplicate ledger entry. `recipe_renderer.py` is
-      not yet wired into `agent/graph.py` — `gate` exists as a callable
-      node, proven standalone, same as `recipe_renderer` was last session.
-      **Product decision 2026-08-11:** `memory_items`' one-row-per-sweep is
-      intentional episode history — do not dedup it. 105 unit tests + 119
-      live checks total now pass.
-OPEN (non-gating)  `agent/graph.py` still ends at `reason` → END — `gate`
-      isn't wired into the compiled graph yet, same "written and proven
-      standalone, not yet connected" pattern as `recipe_renderer` last
-      session. No checkpointer wired — kill-and-resume already lives
-      entirely in `agent/memory/leases.py` (proven independently), additive
-      not a prerequisite. `act_measure`/`agent/tools/sql_operator.py` don't
-      exist, so nothing ever applies the rendered SQL for real yet.
-      Migrations 003/004 still blocked on real prerequisites, not a gap.
-      `ENGRAM_TARGET_PROBE_DSN` still not provisioned. MCP/CloudWatch/
-      ccloud legs of `observe(node)` step 1 still unimplemented. 26257 is
-      open right now only because of the user's VPN — treat it as still
-      blocked by default, not fixed.
+      `sql_probe.py` + `recipe_renderer.py` + `gate.py` + the graph through
+      `reason` all WRITTEN AND VERIFIED LIVE — detail + every bug found/
+      fixed along the way is in the §7 changelog entries, not restated
+      here every session.
+      **ALL FIVE LLD §5 NODES NOW EXIST, 2026-08-11 —
+      `observe→recall→reason→gate→act_measure` is a complete, individually-
+      proven pipeline for the first time.** `agent/tools/sql_operator.py`
+      (LLD §7: allowlisted DDL apply, own INDEPENDENT re-validation, not
+      trusting `recipe_renderer` already checked — a bug in one validator
+      shouldn't silently disable both) + `agent/tools/cloud_api.py` (the
+      backup gate, LLD §5.5 step 1) + `agent/nodes/act_measure.py` (LLD
+      §5.5 steps 2-6, ADR-004 §8's ledger/outcome txns via two new composite
+      `db.py` methods). **Scoped deliberately, stated not hidden:** §8.4's
+      crash-window reconciliation (W1-W4) is NOT implemented — a real gap,
+      not a hidden one; procedure-stats updates deferred to the not-yet-
+      built consolidator worker. **A real cross-cluster data gap caught
+      while DESIGNING this node, fixed before it shipped:** `observe(node)`
+      only stored the query text NORMALIZED for fingerprinting (literals
+      stripped to `?`) — not valid, re-runnable SQL — but `act_measure`
+      needs the ORIGINAL text for its own before/after `EXPLAIN ANALYZE`.
+      Added `payload["raw_text"]` alongside the existing normalized field.
+      **A second real bug, this time in `.gitignore`, same class as the old
+      `db/` mistake:** `fixtures/` was blanket-ignored, so the REAL Phase-0
+      evidence this session needed (`fixtures/cloudapi-backups-basic.json`
+      — genuine captured proof of the empty-backup-list refusal case) had
+      never actually been committed. Checked both fixture files for
+      secrets (none), narrowed the rule, both now tracked. **23/23 new unit
+      tests** (12 backup-gate decision logic against the REAL fixture +
+      11 `act_measure` control flow via scripted fakes) **+ 11/11 live,
+      first run, no bugs**, the closing demonstration: a real 40k-row
+      scenario, a real `CREATE INDEX` rendered and applied via
+      `SqlOperator`, a REAL measured latency drop (**27ms → 2ms**), and the
+      index's existence confirmed afterward in the target cluster's own
+      catalog — not just "no exception was raised." Backup gate used
+      `override_backup_gate=True` (LLD's own audited escape hatch) since no
+      `CCLOUD_TOKEN` exists yet — logged as a new open row, not glossed
+      over. 128 unit tests + 130 live checks total now pass.
+OPEN (non-gating)  `agent/graph.py` still only compiles `observe→recall→
+      reason→END` — `gate`/`act_measure` are both written and individually
+      proven but not yet wired into the compiled graph; that's the very
+      next piece, not a gap discovered late. No checkpointer wired —
+      kill-and-resume already lives entirely in `agent/memory/leases.py`
+      (proven independently), additive not a prerequisite. No `CCLOUD_
+      TOKEN` — the backup gate's live network leg is unverified (§8 row 8).
+      §8.4 crash-window reconciliation (W1-W4) not implemented. Migrations
+      003/004 still blocked on real prerequisites, not a gap.
+      `ENGRAM_TARGET_PROBE_DSN`/`ENGRAM_TARGET_OPERATOR_DSN` still not
+      provisioned. MCP/CloudWatch/ccloud legs of `observe(node)` step 1
+      still unimplemented. 26257 is open right now only because of the
+      user's VPN — treat it as still blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/tools/sql_operator.py` (LLD §7 — the allowlisted-DDL adapter `act_measure(node)` needs to actually apply `recipe_renderer`'s rendered SQL); (2) `agent/nodes/act_measure.py` (LLD §5.5 — the ledger-first apply+measure protocol, ADR-004; the last node the design names); (3) wire `gate` (and eventually `act_measure`) into `agent/graph.py`, replacing the `reason → END` edge; (4) `AsyncCockroachDBSaver` bootstrap; (5) provision `ENGRAM_TARGET_PROBE_DSN` (manual).
+**Next action, in order:** (1) wire `gate` and `act_measure` into `agent/graph.py`, replacing the `reason → END` edge with `reason→gate→act_measure→END` (plus `gate`'s own reject/expire → `END` branch) — the actual five-node loop, compiled and invocable, is the single highest-value remaining piece; (2) provision `CCLOUD_TOKEN` (manual, closes the backup-gate live-network gap); (3) `AsyncCockroachDBSaver` bootstrap; (4) provision `ENGRAM_TARGET_PROBE_DSN`/`ENGRAM_TARGET_OPERATOR_DSN` (manual).
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 25 · Wrote + live-verified `sql_operator.py`, `cloud_api.py`, and `act_measure.py` — all five LLD §5 nodes now exist, closing loop demonstrated with a real 27ms→2ms fix.** `agent/tools/sql_operator.py`: allowlisted DDL apply, with its OWN independent re-validation of the forbidden-keyword/multi-statement check, deliberately not importing `recipe_renderer`'s regex — a bug in one validator should never silently disable both layers of the safety core. `agent/tools/cloud_api.py`: the backup gate (LLD §5.5 step 1). **Went back to check what Phase 0 had actually captured before assuming anything:** `docs/phase0-verification.md` §5 (P0-P3) turned out to be an unfilled template with empty checkboxes, but `fixtures/cloudapi-backups-basic.json` — real evidence from 2026-08-03, `200 {"backups": []}` on a live Basic cluster — genuinely existed on disk. **Found it had never been committed:** `.gitignore` blanket-ignored `fixtures/`, the exact same class of mistake as the old blanket `db/` rule from Session 9. Checked both fixture files for secrets (none), narrowed the rule, committed both. `decide_backup_gate()`'s empty-list case is now tested against that REAL capture, not an invented one; the non-empty-response shape remains an explicitly stated assumption (no real example has ever been captured against this account/tier), and the live network call is unverified — no `CCLOUD_TOKEN` exists, logged as a new `docs/blocked-register.md` §8 row, not glossed over. `agent/nodes/act_measure.py` (LLD §5.5 steps 2-6, ADR-004 §8): two new composite `db.py` methods for the ledger and outcome transactions. **Scoped deliberately:** §8.4's crash-window reconciliation (W1-W4) is explicitly NOT implemented — a real, meaningful gap stated outright rather than half-built; procedure-stats updates deferred to the not-yet-written consolidator worker, since there's no established link from a fresh Proposal to an existing procedure_id yet. **A real design gap caught mid-build, before it shipped broken:** designing this node surfaced that `observe(node)` only ever stored the query text NORMALIZED for fingerprinting (literals collapsed to `?`) — not valid, re-runnable SQL — while `act_measure` needs the ORIGINAL text for its own before/after `EXPLAIN ANALYZE`. Fixed by adding `payload["raw_text"]` alongside the existing normalized field in `observe.py`, and documenting both fields' distinct purposes in `agent/state.py`'s `Observation` docstring. **23/23 new unit tests** (12 for the backup gate's decision logic, run against the real fixture; 11 for `act_measure`'s control flow via scripted fake `SqlProbe`/`SqlOperator`/`CloudApiAdapter`/`Database`) **+ 11/11 live, first run, no bugs** — the actual closing demonstration of the project's core value proposition: a real 40,000-row scenario table, a real `CREATE INDEX IF NOT EXISTS` rendered by `recipe_renderer` and applied for real via `SqlOperator`, a genuinely measured latency improvement (**27.0ms → 2.0ms**, ~13x), and the index's existence confirmed afterward by querying the target cluster's own `SHOW INDEXES` — not merely "no exception was raised." Used `override_backup_gate=True` for this run, LLD's own named audited escape hatch, not a workaround of the gate it's replacing. **All five nodes named in LLD §5 now exist and are each individually proven — `agent/graph.py` itself still only compiles `observe→recall→reason→END`, wiring the remaining two in is the very next piece, not a gap discovered late.** 128 unit tests + 130 live checks now pass in total.
 
 **2026-08-11 — Session 24 · Wrote + live-verified `agent/nodes/gate.py` — invariant #6's "one txn" ledger gate.** `db.py` gained `insert_gate_decision`: `decisions(intent)` + `remediation_actions(proposed)` + `approvals(pending)` in ONE transaction, per LLD §5.4 step 1. **Deliberately different reconciliation strategy from every prior composite write in this repo, explained not just applied:** `insert_incident_observation` and the standalone `insert_task`/`insert_remediation_action` all catch a `UniqueViolation` after attempting the insert, because each of those inserts exactly one row that could conflict — a caught violation only ever needs to roll back that one statement. Here, three inserts share one transaction, so a violation on the *second* one (remediation_actions) would roll back the *first* (decisions) too. Checking `idempotency_key` with a SELECT before inserting anything avoids ever being in that position — safe against races because invariant #5's lease already guarantees exactly one holder calls `gate()` for a given task at a time, so the SELECT-then-INSERT gap is not exploitable in this system's actual concurrency model. Scoped `gate(node)` to LLD §5.4 steps 1/3/4 — step 2 (SSE push) and step 5 (telemetry) skipped, no dashboard/telemetry sink exists; `blocked_by_backup_gate` is actually `act_measure`'s own metric despite being named in gate's list, computed one node later once that node exists. A still-`pending` approval at the poll deadline is marked `expired` by `gate(node)` itself via the existing `decide_approval` CAS — no new DB method needed for that. **10/10 unit tests**: idempotency-key helper (order-independence, cluster/parameter sensitivity) plus a scripted fake `Database` proving the approve/reject/expire control flow deterministically, including the exact number of polls and real (tiny) sleep timing for the expiry path — no real cluster needed. **7/7 live**, and — accurately — not first-run-clean: one assertion failed on the first pass due to comparing a `str` (from `insert_gate_decision`'s return) against a raw `uuid.UUID` (from a direct DB read) with `==`, which Python never considers equal regardless of value; fixed the *test's* comparison, not the underlying code, which was already correct. The live run proves three real things a mock couldn't: a genuine concurrent "approval" written to the DB while `gate()` was actually polling in real wall-clock time (not pre-seeded before the call); a real rejection leaving a genuine `status='skipped'` row and a real episode `memory_items` row, both confirmed by direct query afterward; and a real second `insert_gate_decision` call with the same idempotency key reconciling onto the existing action instead of writing a duplicate ledger entry. **`gate` is not yet wired into `agent/graph.py`** — same "written and proven standalone, not yet connected" position `recipe_renderer.py` was left in last session; the graph still ends at `reason` → END. **105 unit tests + 119 live checks now pass in total.**
 
@@ -210,6 +221,8 @@ One entry per session, reverse-chronological. **Entries are never deleted** — 
 5. **`design/03-adr.md` + `architecture.svg` cited but absent.** [BRAINS] OPEN — decisions inline in HLD §3; **ADR-001/002 superseded by §2.1**.
 6. **`research/execution_roadmap.md` is pre-pivot** — Bedrock/Titan tasks stale (and it was mis-recorded here as missing until 2026-08-10). [BRAINS] **RESOLVED 2026-08-11 — deleted**, not retargeted: nothing else cited it, and its content is already superseded by §2.1/§6/§8 here. Recoverable from git history (commit `4304008`) if ever needed.
 7. **S3 bucket `engram-agent-artifacts`.** [PLUMBER] **RESOLVED 2026-08-11 — bucket created, IAM policy attached, `verify_s3.py` gate PASSES.** Two separate manual AWS steps (bucket creation, then a scoped policy — `s3:PutObject`+`s3:GetObject` on `arn:aws:s3:::engram-agent-artifacts/*`, never `s3:*`) closed in sequence; a real object round-tripped with a byte-identical sha256. `DeleteObject` was never granted, so the probe's own cleanup step correctly fails — one small leftover test object in the bucket, harmless, deliberate scope. Diagnosis: `docs/blocked-register.md` §7.
+8. **Backup gate has no live credential.** [PLUMBER] **OPEN — blocks live verification, not the code.** LLD §5.5 step 1 needs a Cluster-Admin-scoped `CCLOUD_TOKEN` for the Cloud REST API; none exists in `.env`. Real evidence for the "empty list → refuse" case already exists (`fixtures/cloudapi-backups-basic.json`, 2026-08-03) and is now actually committed (see row below) — `agent/tools/cloud_api.py`'s logic is fully unit-tested against it (12/12), but the live network call has never run. `act_measure(node)`'s own smoke test uses `override_backup_gate=True` (LLD's own named escape hatch) to get past this. Fix: provision the key, add as `CCLOUD_TOKEN` in `.env` + as a repo secret. Diagnosis: `docs/blocked-register.md` §8.
+9. **`fixtures/` was blanket-gitignored — real evidence never committed.** [PLUMBER] **RESOLVED 2026-08-11 — narrowed, both files now tracked.** Same class of mistake as the old blanket `db/` rule (§6/row above's era) — `fixtures/cloudapi-backups-basic.json` and `cloudapi-cluster-memory.json` are real, cited evidence with no secrets in them, checked before un-ignoring. Diagnosis: `docs/blocked-register.md` §8.
 
 ---
 

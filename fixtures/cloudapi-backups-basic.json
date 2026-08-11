@@ -1,0 +1,10 @@
+{
+  "_source": "GET /api/v1/clusters/ee8bc725-9ea6-428a-afd7-7b49a879f3ed/backups",
+  "_http_status": 200,
+  "_captured": "2026-08-03",
+  "_cluster_plan": "BASIC",
+  "response": {
+    "backups": [],
+    "pagination": null
+  }
+}

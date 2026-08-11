@@ -24,9 +24,15 @@ out/
 Thumbs.db
 *.log
 scratch/
-fixtures/
 
 # db/ holds SQL source (migrations, console-paste chunks) that IS committed —
 # only ignore actual local scratch state under it, never the .sql sources.
 db/*.db
 db/*.sqlite
+
+# fixtures/ holds real captured API responses that ARE committed and cited
+# as evidence (e.g. fixtures/cloudapi-backups-basic.json, referenced by
+# agent/tools/cloud_api.py and tests/test_cloud_api.py) — same class of
+# mistake as the old blanket db/ rule above; checked for secrets before
+# un-ignoring (2026-08-11): none found, both files are cluster metadata /
+# API response bodies already visible elsewhere in the docs.

@@ -103,8 +103,17 @@ jobs:
           ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
         run: python scripts/smoke_test_gate_node.py --sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings/Ollama mocks + observe/sql_probe/graph/reason/recipe_renderer/gate helpers, no cluster/secrets needed)
+      - name: Run the act_measure NODE smoke test (applies a REAL index, measures a real latency improvement)
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+          ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}
+        run: >
+          python scripts/smoke_test_act_measure.py
+          --target-sslrootcert "$(pwd)/target-ca.crt"
+          --memory-sslrootcert "$(pwd)/cluster-ca.crt"
+
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings/Ollama mocks + observe/sql_probe/graph/reason/recipe_renderer/gate/act_measure/cloud_api helpers, no cluster/secrets needed)
         run: >
           pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py
           tests/test_sql_probe.py tests/test_graph.py tests/test_ollama_cloud_llm.py tests/test_reason.py
-          tests/test_recipe_renderer.py tests/test_gate.py -v
+          tests/test_recipe_renderer.py tests/test_gate.py tests/test_act_measure.py tests/test_cloud_api.py -v

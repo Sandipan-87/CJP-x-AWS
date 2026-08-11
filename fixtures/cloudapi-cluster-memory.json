@@ -1,0 +1,53 @@
+{
+  "id": "ee8bc725-9ea6-428a-afd7-7b49a879f3ed",
+  "name": "engram-memory",
+  "cockroach_version": "v26.2.1",
+  "upgrade_status": "FINALIZED",
+  "plan": "BASIC",
+  "cloud_provider": "AWS",
+  "account_id": "",
+  "customer_cloud_account": null,
+  "state": "CREATED",
+  "creator_id": "6dfb4363-1767-4691-9f60-d211aadda9be",
+  "operation_status": "UNSPECIFIED",
+  "config": {
+    "serverless": {
+      "routing_id": "engram-memory-30868",
+      "usage_limits": {
+        "request_unit_limit": "50000000",
+        "storage_mib_limit": "10240"
+      },
+      "upgrade_type": "AUTOMATIC"
+    }
+  },
+  "regions": [
+    {
+      "name": "us-east-1",
+      "sql_dns": "engram-memory-30868.j77.aws-us-east-1.cockroachlabs.cloud",
+      "ui_dns": "",
+      "node_count": 0,
+      "internal_dns": "engram-memory-30868.internal-j77.aws-us-east-1.cockroachlabs.cloud",
+      "primary": true,
+      "private_endpoint_dns": "engram-memory-30868.internal-j77.aws-us-east-1.cockroachlabs.cloud",
+      "s3_vpc_endpoint_id": "",
+      "machine_type": "",
+      "num_virtual_cpus": 0,
+      "disk_iops": 0
+    }
+  ],
+  "created_at": "2026-08-02T15:54:38.946028Z",
+  "updated_at": "2026-08-02T15:54:41.321310Z",
+  "deleted_at": null,
+  "sql_dns": "engram-memory-30868.j77.aws-us-east-1.cockroachlabs.cloud",
+  "network_visibility": "PUBLIC",
+  "egress_traffic_policy": "UNSPECIFIED",
+  "parent_id": "root",
+  "keychain_config": {
+    "aws_account_id": "",
+    "gcp_auth_principal": ""
+  },
+  "delete_protection": "DISABLED",
+  "cidr_range": "",
+  "labels": {},
+  "azure_cluster_identity_client_id": ""
+}

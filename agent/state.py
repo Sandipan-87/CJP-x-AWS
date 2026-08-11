@@ -25,12 +25,14 @@ class Observation(TypedDict):
     table's shape, not a 1:1 mirror (no `observation_id`/`task_id`; those
     belong to the DB row, not the state the graph carries between nodes).
 
-    INTERFACE ASSUMPTION (stated because `observe(node)` doesn't exist yet to
-    confirm it): `payload["text"]` is expected to hold the normalized query
-    text / metric signature that `observe(node)` fingerprinted (LLD §5.1
-    step 2) — `agent/nodes/recall.py` reads this key to know what to embed.
-    If `observe(node)` lands with a different key, only that one read site
-    needs to change.
+    `observe(node)` (`agent/nodes/observe.py`) actually populates `payload`
+    with two related-but-different text fields — caught while designing
+    `act_measure(node)`, not assumed correctly on the first try:
+      - `payload["text"]` — the NORMALIZED query (literals collapsed to
+        `?`, LLD §5.1 step 2). `agent/nodes/recall.py` embeds THIS one.
+      - `payload["raw_text"]` — the ORIGINAL, runnable SQL. `act_measure
+        (node)` needs THIS one for its own before/after `EXPLAIN ANALYZE`
+        — the normalized text is not valid SQL, it can't be re-run.
     """
 
     source: str            # mcp|ccloud|cloudwatch|sql_probe|webhook

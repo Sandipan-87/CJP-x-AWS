@@ -872,6 +872,87 @@ class Database:
 
         return decision_id, action_id, approval_id
 
+    async def insert_act_decision(
+        self,
+        task_id: str,
+        scope_id: str,
+        action_id: str,
+        *,
+        model_id: str,
+        reasoning: dict,
+        measured_before: dict,
+    ) -> str:
+        """LLD §8.3's ACT ledger txn: `decisions(node='act')` +
+        `remediation_actions` transitioning to `'applied'` with
+        `measured_before`, in ONE transaction — "the ledger row IS the
+        side-effect record; decision+intent+record = one txn" (invariant #6).
+
+        Unlike `insert_gate_decision`, this never needs idempotency-key
+        reconciliation: the row already exists (`gate` created it), this
+        only ever UPDATEs it — no SELECT-before-INSERT dance needed here.
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO decisions (task_id, scope_id, node, model_id, reasoning)
+                    VALUES (%s, %s, 'act', %s, %s)
+                    RETURNING decision_id
+                    """,
+                    (task_id, scope_id, model_id, Jsonb(reasoning)),
+                )
+                decision_id = str((await cur.fetchone())["decision_id"])
+
+                await cur.execute(
+                    "UPDATE remediation_actions SET status = 'applied', measured_before = %s "
+                    "WHERE action_id = %s",
+                    (Jsonb(measured_before), action_id),
+                )
+
+        return decision_id
+
+    async def insert_outcome_decision(
+        self,
+        action_id: str,
+        scope_id: str,
+        *,
+        outcome: str,
+        measured_after: dict,
+        applied_at: datetime,
+        episode_content: str,
+        episode_provenance: dict,
+    ) -> str:
+        """LLD §8.3's OUTCOME txn: `remediation_actions(outcome,
+        measured_after, applied_at)` + `memory_items(episode)`, in ONE
+        transaction.
+
+        LLD §5.5 step 6 also names updating `procedures` stats and
+        `approvals(decided_*)` — deliberately NOT included here: `procedures`
+        rows are created by the not-yet-written `consolidator` worker (LLD
+        §9), so there is no established link yet from a fresh `Proposal` to
+        an existing `procedure_id` to update; and `approvals` was already
+        decided by `gate(node)` before `act_measure` ever runs — nothing
+        further to write there.
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "UPDATE remediation_actions SET outcome = %s, measured_after = %s, applied_at = %s "
+                    "WHERE action_id = %s",
+                    (outcome, Jsonb(measured_after), applied_at, action_id),
+                )
+                await cur.execute(
+                    """
+                    INSERT INTO memory_items (scope_id, class, content, provenance)
+                    VALUES (%s, 'episode', %s, %s)
+                    RETURNING item_id
+                    """,
+                    (scope_id, episode_content, Jsonb(episode_provenance)),
+                )
+                item_id = str((await cur.fetchone())["item_id"])
+
+        return item_id
+
     # -------------------------------------------------------------- procedures
 
     async def update_procedure_stats(self, procedure_id: str, success: bool) -> None:

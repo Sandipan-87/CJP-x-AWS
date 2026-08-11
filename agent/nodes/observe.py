@@ -134,6 +134,10 @@ async def observe(
         kind="query_stats",
         payload={
             "text": normalized,
+            "raw_text": probe["query_text"],  # runnable SQL -- normalized "text" has literals
+                                               # stripped to '?' for fingerprinting/embedding and
+                                               # is NOT valid SQL; act_measure(node) needs THIS for
+                                               # its own before/after EXPLAIN ANALYZE measurement
             "latency_ms": probe["probe_latency_ms"],
             "plan_has_seq_scan": probe["plan_has_seq_scan"],
             "index_candidate": probe.get("index_candidate"),
@@ -161,6 +165,7 @@ async def observe(
         "entity_ids": [entity_id],
         "payload": {
             "text": normalized,
+            "raw_text": probe["query_text"],  # see the identical field above -- act_measure needs this
             "latency_ms": probe["probe_latency_ms"],
             "plan_has_seq_scan": probe["plan_has_seq_scan"],
             "index_candidate": probe.get("index_candidate"),
