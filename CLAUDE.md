@@ -105,47 +105,53 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
-      APPLIED live · S3 fully closed · full memory layer (`db`, `scoring`,
-      `recall`, `leases`, `embeddings`) + `agent/providers/{base,
-      cohere_embed}.py` + two LangGraph nodes (`observe`, `recall`) all
-      WRITTEN AND VERIFIED LIVE — detail + every bug found/fixed along the
-      way is in the §7 changelog entries, not restated here every session.
-      **`agent/tools/sql_probe.py` WRITTEN AND VERIFIED LIVE, 2026-08-11**
-      — the first tool adapter, and the first module touching the TARGET
-      cluster at all. `SqlProbe.explain_analyze()` runs a real `EXPLAIN
-      ANALYZE` (timing + full-scan detection) **and** a plain `EXPLAIN`
-      (index recommendations) — measured live that CockroachDB never puts
-      recommendations in the ANALYZE output, so one call alone can't give
-      both. `scripts/smoke_test_sql_probe.py`, 9/9: a real 20k-row scenario
-      built on the target cluster, probed for real, bridged through
-      `probe_result_from_explain()` into the **actual** `observe(node)`,
-      which writes to the **memory** cluster — the first test in this repo
-      to cross both clusters in one run, proving the sensory-organ-to-brain
-      path with live data, not mocks. **Product decision 2026-08-11:**
-      `memory_items` getting one row per sweep for a recurring fingerprint
-      is INTENTIONAL (episode history) — do not add a dedup there; only the
-      embedding itself is cached (D9). 43 unit tests + 92 live checks total
-      now pass.
-OPEN (non-gating)  Migrations 003/004 still blocked on real prerequisites
-      (seed corpus; `saver.setup()`), not a gap. No `agent/graph.py` yet —
-      `observe`/`recall` are callable but nothing assembles a `StateGraph`.
-      `ENGRAM_TARGET_PROBE_DSN` (dedicated read-only role) still not
-      provisioned — `SqlProbe` falls back to the admin `ENGRAM_TARGET_DSN`
-      with a loud warning. MCP/CloudWatch/ccloud collection legs of
-      `observe(node)` step 1 still unimplemented. 26257 is open right now
-      only because of the user's VPN — treat it as still blocked by
-      default, not fixed.
+      APPLIED live · S3 fully closed · full memory layer + both providers +
+      the first tool adapter (`sql_probe.py`) all WRITTEN AND VERIFIED
+      LIVE — detail + every bug found/fixed along the way is in the §7
+      changelog entries, not restated here every session.
+      **`agent/graph.py` WRITTEN AND VERIFIED LIVE, 2026-08-11 — THE FIRST
+      RUNNING AGENT LOOP, not a library of parts anymore.** First real use
+      of the `langgraph` package: compiles `observe → recall → END` with
+      observe's own conditional edge ("no anomaly → done"). Checkpointer
+      deliberately deferred (needs its own `AsyncCockroachDBSaver.setup()`
+      + migration-004 bootstrap, LLD §4 — a separate piece of work, not a
+      side effect of wiring two nodes); the graph compiles and runs without
+      one for now — real DB writes still happen for real regardless, since
+      the NODES write to CockroachDB directly, independent of whatever
+      LangGraph itself checkpoints. `scripts/smoke_test_graph.py`, 9/9,
+      first run, no bugs: a real scenario on the target cluster, probed for
+      real, invoked through the compiled graph TWICE — once routing
+      `observe → recall` (incident fires, `recall_bundle` populated) and
+      once routing straight to `END` after `observe` alone (no anomaly,
+      `recall_bundle` stays `None` — proving the branch is actually skipped,
+      not run-and-empty) — both branches proven live, both on real data.
+      **Product decision 2026-08-11:** `memory_items`' one-row-per-sweep is
+      intentional episode history — do not dedup it. 46 unit tests + 101
+      live checks total now pass.
+OPEN (non-gating)  No checkpointer wired — cross-run resume-from-checkpoint
+      isn't there yet (kill-and-resume today lives entirely in `agent/
+      memory/leases.py`, already proven; this is an additive layer, not a
+      prerequisite for that mechanism). `reason`/`gate`/`act_measure` don't
+      exist, so the graph ends at `recall`. Migrations 003/004 still
+      blocked on real prerequisites (seed corpus; `saver.setup()`), not a
+      gap. `ENGRAM_TARGET_PROBE_DSN` (dedicated read-only role) still not
+      provisioned — `SqlProbe` falls back to the admin DSN with a loud
+      warning. MCP/CloudWatch/ccloud collection legs of `observe(node)`
+      step 1 still unimplemented. 26257 is open right now only because of
+      the user's VPN — treat it as still blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/graph.py` (LangGraph `StateGraph` assembly — the first real dependency on the `langgraph` package; `observe → recall` now has a real signal to run on, per the user's own reasoning for building `sql_probe.py` first); (2) provision `ENGRAM_TARGET_PROBE_DSN` on the target cluster (manual — a real read-only role, closing the fallback warning in `sql_probe.py`); (3) migrations 003/004 once their prerequisites are in place; (4) `agent/config.py` (pydantic-settings, LLD §2).
+**Next action, in order:** (1) `AsyncCockroachDBSaver` bootstrap (LLD §6.3: `saver.setup()` on the still-empty checkpoint tables, immediately followed by migration 004's TTL) — closes the "no checkpointer" gap and unblocks 004; (2) `agent/providers/ollama_cloud_llm.py` + `agent/nodes/reason.py` — the next real node, extending the graph past `recall`; (3) provision `ENGRAM_TARGET_PROBE_DSN` on the target cluster (manual); (4) migration 003 once a seed corpus exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 21 · Wrote + live-verified `agent/graph.py` — the first running agent loop.** First real use of the `langgraph` package (v1.2.10, installed this session): `build_graph(db, embed_provider)` compiles `observe → recall → END` with observe's own conditional edge from LLD §4 ("no anomaly → done"). `db`/`embed_provider` are bound via closures over each node — LangGraph nodes only ever receive `state`, so a per-invocation `initial_probe: dict | None` field was added to `AgentState` (not in the LLD's §3 listing; a compiled graph has no other way to hand a sweep's raw `ProbeResult` into `observe(node)`'s wrapper). **Checkpointer deliberately deferred, stated not hidden:** LLD §4 wants `AsyncCockroachDBSaver` wired in ("no side effect without a checkpoint commit"), but that needs its own bootstrap (`saver.setup()` on the still-empty checkpoint tables, immediately followed by migration 004's TTL) — a real, separate piece of work, not a side effect of assembling two nodes. The graph compiles and runs without one for now; this does not weaken kill-and-resume, which already lives entirely in `agent/memory/leases.py` and was proven independently in Session 15 — LangGraph-level checkpointing is an additive layer on top of that, not a prerequisite for it. `tests/test_graph.py`: 3 unit tests for the one pure piece (`_route_after_observe`), no cluster needed. `scripts/smoke_test_graph.py`, 9/9, **first run, no bugs**: builds a real scenario on the target cluster, probes it for real, invokes the compiled graph twice — once where the incident fires (routes `observe → recall`, `recall_bundle` populated) and once where it doesn't (routes straight to `END`, `recall_bundle` stays `None` — proving the branch is genuinely skipped, not run-and-empty). Both branches proven live, on real data, exactly the loop the user asked to watch execute rather than compile dry against mocked payloads. **46 unit tests + 101 live checks now pass in total.**
 
 **2026-08-11 — Session 20 · Wrote + live-verified `agent/tools/sql_probe.py` — the first real sensory organ, crossing both clusters.** User made an explicit product decision (recorded, not left implicit): `memory_items`' one-row-per-sweep behavior from Session 19 is intentional episode history, never to be deduped — only the embedding is cached. User also directed the build order: `sql_probe.py` before `agent/graph.py`, on the reasoning that compiling a `StateGraph` now would only run on mocked payloads, not real data. **Measured, not assumed, before writing any parser:** built a real 20k-row scenario table on the live TARGET cluster and inspected actual `EXPLAIN ANALYZE`/`EXPLAIN` output by hand — confirmed `EXPLAIN ANALYZE` gives real execution time and a `spans: FULL SCAN` annotation but **never** an index-recommendations section, while plain `EXPLAIN` gives recommendations but no timing. `SqlProbe.explain_analyze()` therefore runs both and combines them, a gap the LLD's own §5.3 text doesn't call out explicitly (it only contrasts "MCP `explain_query`, or `EXPLAIN ANALYZE`" as if either alone were sufficient). **Stated, not hidden:** `ENGRAM_TARGET_PROBE_DSN` (LLD §2's dedicated read-only role) has never actually been provisioned — only the admin-level `ENGRAM_TARGET_DSN` exists in `.env` — so `SqlProbe` falls back to it with a loud warning rather than silently running as admin forever; provisioning the real role is a manual step, logged as open, not fixed. Added `probe_result_from_explain()` to `agent/nodes/observe.py` (not `sql_probe.py`) specifically to keep the dependency direction correct — tools know nothing about nodes. `tests/test_sql_probe.py`: 8 unit tests against the ACTUAL captured plan text (not invented fixtures) for the two parsers. `scripts/smoke_test_sql_probe.py`, 9/9, **the first test in this repo to cross both clusters in one run**: builds a real scenario on the target cluster, probes it for real, bridges the result into the actual `observe(node)`, which writes to the memory cluster — proving the full sensory-organ-to-brain path end to end with live data. One test-expectation mistake caught and fixed before final commit: the real scenario's measured latency (~19ms) was correctly *below* the production 1000ms anomaly threshold, so the first run correctly did NOT flag an incident — not a bug, a wrong test assumption; fixed by lowering the threshold explicitly for this small test scenario, not the production default. **43 unit tests + 92 live checks now pass in total.**
 

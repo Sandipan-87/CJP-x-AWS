@@ -71,3 +71,9 @@ class AgentState(TypedDict):
     measurement: dict | None           # TODO: Measurement lands with act_measure(node)
     error: dict | None                 # TODO: TypedError lands with error-handling wiring
     model_meta: dict                   # model_id, version, token usage per call
+    initial_probe: dict | None         # NOT in the LLD's §3 listing — added for agent/graph.py
+                                        # (LLD §4): a compiled LangGraph node only ever receives
+                                        # `state`, so a sweep's raw ProbeResult (agent/nodes/
+                                        # observe.py) has to enter the graph through a state field,
+                                        # not a direct function argument. Scratch input, not
+                                        # meaningful once observe(node) has consumed it.

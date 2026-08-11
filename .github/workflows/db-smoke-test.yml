@@ -80,5 +80,15 @@ jobs:
           --target-sslrootcert "$(pwd)/target-ca.crt"
           --memory-sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks + observe/sql_probe helpers, no cluster/secrets needed)
-        run: pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py tests/test_sql_probe.py -v
+      - name: Run the compiled graph smoke test (agent/graph.py, observe -> recall -> END, both branches)
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+          ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: >
+          python scripts/smoke_test_graph.py
+          --target-sslrootcert "$(pwd)/target-ca.crt"
+          --memory-sslrootcert "$(pwd)/cluster-ca.crt"
+
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks + observe/sql_probe/graph helpers, no cluster/secrets needed)
+        run: pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py tests/test_sql_probe.py tests/test_graph.py -v
