@@ -11,6 +11,23 @@ one implementation (invariant #2: no embeddings ladder).
 A cache hit under a DIFFERENT `model_id` is treated as a MISS, never as a
 hit: 1024-dim spaces from different models are mutually incomparable
 (HLD §3 D9/D12) — the width matching is not enough, the model must match too.
+
+CAUGHT BEFORE A SECOND CALL SITE EXISTED, stated rather than silently fixed:
+`embedding_cache`'s frozen schema (migration 001) keys on `content_sha256`
+alone — no `input_type` column. But Cohere's `search_document` and
+`search_query` embeddings for the SAME text are deliberately DIFFERENT
+vectors (the asymmetry invariant #9/§4 already warns about). §5.2's
+`recall(node)` spec calls for "cache hit on fingerprint" reusing the exact
+text `observe(node)` already embedded with `search_document` — if the cache
+key were pure content hash, a later `search_query` lookup for that same
+text would silently return the WRONG (document-side) vector: exactly the
+"collapsing input_type degrades recall silently" failure invariant #9 exists
+to prevent, just relocated into the cache instead of a missing argument.
+**Fix, contained entirely in this module, no migration needed:** the hash
+folds in `input_type`, so a `search_document` and a `search_query` embedding
+of the same text get different cache keys and can never collide. Cheap
+because nothing has been seeded yet (invariant #1) — changing the key
+composition now costs nothing; changing it after real rows exist would not.
 """
 
 from __future__ import annotations
@@ -27,8 +44,10 @@ EXPECTED_DIM = 1024
 DEFAULT_PROVIDER_BATCH = 96  # matches CohereEmbeddings.MAX_BATCH; no ladder exists to vary this
 
 
-def _content_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _content_hash(text: str, input_type: str) -> str:
+    """`input_type` is folded into the key on purpose — see the module
+    docstring's CAUGHT note. Never hash `text` alone."""
+    return hashlib.sha256(f"{input_type}:{text}".encode("utf-8")).hexdigest()
 
 
 async def embed_and_cache(
@@ -48,7 +67,7 @@ async def embed_and_cache(
     if not texts:
         return []
 
-    hashes = [_content_hash(t) for t in texts]
+    hashes = [_content_hash(t, input_type) for t in texts]
     cached = await db.get_cached_embeddings(hashes)
 
     results: list[list[float] | None] = [None] * len(texts)

@@ -98,6 +98,22 @@ async def main(sslrootcert: str | None) -> int:
             empty = await embed_and_cache(db, counting, [], "search_document")
             record("empty list returns [] without touching the provider", empty == [])
 
+            print(f"\n{RULE}\nsearch_document vs search_query — same text, must NOT collide in the cache\n{RULE}")
+            # Regression check for a real bug caught while building this module (see
+            # embeddings.py's docstring): the cache key used to be sha256(text) alone,
+            # which would have made this a false cache hit returning the WRONG vector.
+            calls_before = counting.calls
+            v_doc = await embed_and_cache(db, counting, [texts[0]], "search_document")
+            calls_after_doc = counting.calls
+            v_query = await embed_and_cache(db, counting, [texts[0]], "search_query")
+            calls_after_query = counting.calls
+            record("search_document call was a cache hit (no provider call)",
+                   calls_after_doc == calls_before)
+            record("search_query call for the SAME text was a cache MISS, not a false hit",
+                   calls_after_query == calls_after_doc + 1, f"calls={calls_after_query}")
+            record("the two vectors are actually different (asymmetric embeddings)",
+                   v_doc[0] != v_query[0])
+
         except Exception as exc:  # noqa: BLE001
             all_ok = False
             record("UNEXPECTED EXCEPTION", False, f"{type(exc).__name__}: {exc}")

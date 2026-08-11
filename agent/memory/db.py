@@ -337,7 +337,12 @@ class Database:
                 if beam is not None:
                     # connection-local, reset by the pool handing back a
                     # plain connection on release — never leaks to reuse.
-                    await cur.execute("SET vector_search_beam_size = %s", (beam,))
+                    # Measured 2026-08-11: SET does not accept a bind param here
+                    # ("requires an integer value... 'N' is a string") -- same
+                    # class of issue as the INTERVAL fix in _acquire_or_takeover.
+                    # `beam` is caller-controlled (never user input), so an
+                    # int()-validated f-string is safe.
+                    await cur.execute(f"SET vector_search_beam_size = {int(beam)}")
                 await cur.execute(
                     """
                     SELECT item_id, class, content, provenance,

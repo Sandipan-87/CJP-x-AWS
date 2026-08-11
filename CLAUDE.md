@@ -105,44 +105,61 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
-      APPLIED live · `agent/memory/{db,scoring,recall,leases}.py` +
-      `agent/providers/{base,cohere_embed}.py` all WRITTEN AND VERIFIED
-      LIVE (73 checks) · **S3 fully closed** ·
-      **`agent/memory/embeddings.py` WRITTEN AND VERIFIED, 2026-08-11** —
-      the write-path glue closing D9 ("never embed the same content
-      twice"): hash → cache lookup → provider only on a miss → cache
-      write. `db.py` gained `get_cached_embeddings`/`insert_embedding_cache`
-      plus a new `_parse_vector_literal` — measured live that a raw
-      `VECTOR` column comes back as a bracket-literal `str`, not a list,
-      something no prior method needed to know. `scripts/smoke_test_
-      embeddings.py`, 10/10 against real Cohere + the live cluster: a
-      `CountingProvider` wrapper PROVES a repeat call never reaches Cohere
-      at all (not just assumed), a mixed cached/new-text call only sends
-      the new text, and round-tripped vectors are byte-identical to the
-      originals. First run, no bugs. `recall()` can now realistically take
-      raw incident text once a caller wires `embed_and_cache` in front of
-      it — that wiring itself is the next graph-node-level piece, not this
-      chunk. 23 unit tests + 60 live checks total now pass.
+      APPLIED live · `agent/memory/{db,scoring,recall,leases,embeddings}.py`
+      + `agent/providers/{base,cohere_embed}.py` all WRITTEN AND VERIFIED
+      LIVE · **S3 fully closed** ·
+      **FIRST LANGGRAPH NODE WRITTEN AND VERIFIED LIVE, 2026-08-11** —
+      `agent/state.py` (`AgentState`/`Observation`/`RecallBundle`
+      TypedDicts; `proposal`/`approval`/`action`/`measurement`/`error`
+      deliberately left as `dict | None` placeholders — inventing
+      `Proposal`/`Approval`/etc. before `reason`/`gate`/`act_measure` exist
+      to check them against would be speculative) and `agent/nodes/
+      recall.py` (§5.2: embed → ANN → hybrid re-rank → context bundle,
+      writing a real `decisions(node='recall')` audit row). **Two more real
+      bugs caught building this, both fixed before commit:** CockroachDB's
+      `SET vector_search_beam_size = %s` does not accept a bind parameter
+      (needs a literal — same class of bug as the earlier `INTERVAL` fix),
+      and a real design tension surfaced between the frozen `embedding_
+      cache` schema (keyed on `content_sha256` alone) and §5.2's caching
+      expectation — a `search_document` and `search_query` embedding of the
+      *same text* are deliberately different vectors, so the old
+      content-only cache key would have silently returned the wrong one;
+      fixed inside `embeddings.py` by folding `input_type` into the hash,
+      no migration needed (nothing seeded yet, invariant #1). `scripts/
+      smoke_test_recall_node.py`, 11/11 against real Cohere + the live
+      cluster: seeds a prior "incident #1" memory item, then the recall
+      NODE (not just the DAO underneath it) finds it, hybrid-scores it,
+      writes the audit row, and a cold-start call (no observation text)
+      returns a clean miss instead of raising. Measured recall latency
+      ~5.9s **over a home VPN tunnel to both Cohere and CockroachDB** —
+      not representative of the real ECS-Fargate-same-region path the
+      `<8s` demo budget assumes; flagged, not treated as a red flag.
+      23 unit tests + 74 live checks total now pass.
 OPEN (non-gating)  Migrations 003 (vector index) and 004 (checkpoint TTL)
       NOT YET applied — real prerequisites (seed corpus; `saver.setup()`)
       haven't happened, correct sequencing not a gap. `agent/providers/
       base.py` still has no `LLMProvider` ABC (lands with
-      `ollama_cloud_llm.py`, deliberately deferred, not a gap). No graph
-      node exists yet — `agent/memory/*` + `agent/providers/*` are still
-      isolated, individually-verified modules, not a running agent. 26257
-      is open right now only because of the user's VPN — treat it as still
-      blocked by default, not fixed.
+      `ollama_cloud_llm.py`, deliberately deferred). No `agent/graph.py`
+      yet — `recall(node)` is written and callable but nothing assembles a
+      `StateGraph` around it; `observe(node)` doesn't exist either, so the
+      "text to embed comes from `observations[].payload['text']`"
+      assumption in `agent/state.py`/`agent/nodes/recall.py` is untested
+      against a real `observe(node)` implementation. 26257 is open right
+      now only because of the user's VPN — treat it as still blocked by
+      default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) the first LangGraph node (`agent/nodes/recall.py` or `observe.py`) — the point where these become a running agent, not isolated modules; (2) migrations 003/004 once their prerequisites are in place; (3) `agent/config.py` (pydantic-settings, LLD §2) — several modules still read raw env vars directly as a stated, temporary simplification.
+**Next action, in order:** (1) `agent/nodes/observe.py` — the other half of the assumption `recall.py` currently makes about `observations[].payload['text']`, and the node that actually creates a task/incident in the first place; (2) `agent/graph.py` (LangGraph `StateGraph` assembly — the first real dependency on the `langgraph` package) once at least two nodes exist to wire together; (3) migrations 003/004 once their prerequisites are in place; (4) `agent/config.py` (pydantic-settings, LLD §2) — several modules still read raw env vars directly as a stated, temporary simplification.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 18 · Wrote + live-verified `agent/nodes/recall.py` — the first LangGraph node.** **Found and fixed a real bug in yesterday's `embeddings.py` before it could bite twice:** the cache key was `sha256(text)` alone, with no `input_type` folded in — but Cohere's `search_document` and `search_query` embeddings of the *same text* are deliberately different vectors, so a later cross-type lookup would have silently returned the wrong one, exactly the "collapsing input_type degrades recall silently" failure invariant #9 already warns about, just relocated into the cache. Fixed inside `embeddings.py` alone (hash now includes `input_type`) — no migration needed, nothing seeded yet (invariant #1 makes this cheap right now, not after). Added a permanent regression check to `smoke_test_embeddings.py` proving the two input types no longer collide (13/13, up from 10/10). Wrote `agent/state.py` (`AgentState`/`Observation`/`RecallBundle` — `proposal`/`approval`/`action`/`measurement`/`error` deliberately left as `dict | None` placeholders rather than inventing `Proposal`/`Approval`/etc. before `reason`/`gate`/`act_measure` exist to check them against) and `agent/nodes/recall.py` (LLD §5.2: embed → ANN → hybrid re-rank → context bundle, persisting a real `decisions(node='recall')` audit row) — a plain async function matching LangGraph's node contract, no dependency on the `langgraph` package itself yet. **Stated, not hidden:** the text to embed comes from `observations[].payload["text"]`, an interface assumption between this node and the not-yet-written `observe(node)` — only one function needs to change if that key turns out wrong. **A second real bug caught live:** `SET vector_search_beam_size = %s` doesn't accept a bind parameter in CockroachDB (needs a literal) — same class of issue as the earlier `INTERVAL` fix in the lease code, caught because this was the first call to ever pass a `beam` value (the recall-node test does; the plain DAO smoke test never had). Fixed with an `int()`-validated f-string. `scripts/smoke_test_recall_node.py`, 11/11 against real Cohere + the live cluster: seeds a real "incident #1" memory item, the recall node finds it, hybrid-scores it, writes the audit row, and a cold-start call (no observation text yet) returns a clean miss instead of raising. Measured latency ~5.9s — over a home VPN tunnel to both Cohere and CockroachDB, explicitly **not** representative of the real same-region Fargate path the `<8s` demo budget assumes; recorded as a caveat, not a red flag. **23 unit tests + 74 live checks now pass in total.**
 
 **2026-08-11 — Session 17 · Wrote + live-verified `agent/memory/embeddings.py` — closes D9, the write-path cache.** `embed_and_cache(db, provider, texts, input_type)`: hashes each text (sha256), checks `embedding_cache` via two new `db.py` methods (`get_cached_embeddings`, `insert_embedding_cache`), calls the provider only for misses (chunked to its batch ceiling), writes the cache row on every miss. A cache hit under a *different* `model_id` is treated as a miss, not a hit — invariant #2's "different models are incomparable spaces" enforced at the read, not just documented. **Real bug caught before it shipped, not after:** selecting a raw `VECTOR` column back out returns a plain Python `str` in CockroachDB's own bracket-literal syntax, not a list — psycopg3 has no adapter for it, and nothing before this chunk had ever read one back (only written them, or used them inside `<=>`). Tested directly against the live cluster before writing the cache-read method, not assumed; added `_parse_vector_literal` (the inverse of the existing `_vector_literal`) once confirmed. **Verified live, first run, no bugs** — `scripts/smoke_test_embeddings.py`, 10/10, the first test in this repo to exercise the *entire* write-path chain for real (Cohere → cache → CockroachDB → cache hit): a `CountingProvider` wrapper around the real `CohereEmbeddings` *proves* — call-count asserted, not assumed — that a repeat call never reaches Cohere at all, a mixed cached/new-text call sends only the new text, and cached vectors round-trip byte-identical to the originals. Wired into `db-smoke-test.yml` (needs a new `COHERE_API_KEY` repo secret to actually run there — not yet added, that step will fail auth until it is; every other step is unaffected). **23 unit tests + 60 live checks now pass in total.** `recall()` can realistically take raw incident text once something wires `embed_and_cache` in front of it — that wiring is graph-node-level work, next chunk, not this one.
 
