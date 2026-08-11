@@ -80,9 +80,11 @@ jobs:
           --target-sslrootcert "$(pwd)/target-ca.crt"
           --memory-sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run the compiled graph smoke test (agent/graph.py, observe -> recall -> reason -> END, both branches)
-        # Needs OLLAMA_API_KEY on top of the other secrets -- reason(node) makes a real
-        # Ollama Cloud call now that the graph extends past recall.
+      - name: Run the FULL compiled graph smoke test (observe -> recall -> reason -> gate -> act_measure -> END)
+        # All five LLD S5 nodes now wired -- this run applies a REAL index on the target
+        # cluster and measures a real latency improvement, through the compiled graph
+        # itself (not the node function called directly, unlike smoke_test_act_measure.py).
+        # override_backup_gate=True is used inside the script (no CCLOUD_TOKEN provisioned).
         env:
           ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
           ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}

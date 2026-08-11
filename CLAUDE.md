@@ -100,73 +100,71 @@ Every code-generation turn states which role is executing. Roles are domain boun
 ## 6. CURRENT POSITION
 
 ```
-PHASE 0 — CLOSED 2026-08-11. PHASE 1 — STARTED same day (P1-P1 migrations
-written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
-⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
-   (4 migration files) for the first time this project.
-DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
-      APPLIED live · S3 fully closed · full memory layer + both providers +
-      `sql_probe.py` + `recipe_renderer.py` + `gate.py` + the graph through
-      `reason` all WRITTEN AND VERIFIED LIVE — detail + every bug found/
-      fixed along the way is in the §7 changelog entries, not restated
-      here every session.
-      **ALL FIVE LLD §5 NODES NOW EXIST, 2026-08-11 —
-      `observe→recall→reason→gate→act_measure` is a complete, individually-
-      proven pipeline for the first time.** `agent/tools/sql_operator.py`
-      (LLD §7: allowlisted DDL apply, own INDEPENDENT re-validation, not
-      trusting `recipe_renderer` already checked — a bug in one validator
-      shouldn't silently disable both) + `agent/tools/cloud_api.py` (the
-      backup gate, LLD §5.5 step 1) + `agent/nodes/act_measure.py` (LLD
-      §5.5 steps 2-6, ADR-004 §8's ledger/outcome txns via two new composite
-      `db.py` methods). **Scoped deliberately, stated not hidden:** §8.4's
-      crash-window reconciliation (W1-W4) is NOT implemented — a real gap,
-      not a hidden one; procedure-stats updates deferred to the not-yet-
-      built consolidator worker. **A real cross-cluster data gap caught
-      while DESIGNING this node, fixed before it shipped:** `observe(node)`
-      only stored the query text NORMALIZED for fingerprinting (literals
-      stripped to `?`) — not valid, re-runnable SQL — but `act_measure`
-      needs the ORIGINAL text for its own before/after `EXPLAIN ANALYZE`.
-      Added `payload["raw_text"]` alongside the existing normalized field.
-      **A second real bug, this time in `.gitignore`, same class as the old
-      `db/` mistake:** `fixtures/` was blanket-ignored, so the REAL Phase-0
-      evidence this session needed (`fixtures/cloudapi-backups-basic.json`
-      — genuine captured proof of the empty-backup-list refusal case) had
-      never actually been committed. Checked both fixture files for
-      secrets (none), narrowed the rule, both now tracked. **23/23 new unit
-      tests** (12 backup-gate decision logic against the REAL fixture +
-      11 `act_measure` control flow via scripted fakes) **+ 11/11 live,
-      first run, no bugs**, the closing demonstration: a real 40k-row
-      scenario, a real `CREATE INDEX` rendered and applied via
-      `SqlOperator`, a REAL measured latency drop (**27ms → 2ms**), and the
-      index's existence confirmed afterward in the target cluster's own
-      catalog — not just "no exception was raised." Backup gate used
-      `override_backup_gate=True` (LLD's own audited escape hatch) since no
-      `CCLOUD_TOKEN` exists yet — logged as a new open row, not glossed
-      over. 128 unit tests + 130 live checks total now pass.
-OPEN (non-gating)  `agent/graph.py` still only compiles `observe→recall→
-      reason→END` — `gate`/`act_measure` are both written and individually
-      proven but not yet wired into the compiled graph; that's the very
-      next piece, not a gap discovered late. No checkpointer wired —
-      kill-and-resume already lives entirely in `agent/memory/leases.py`
-      (proven independently), additive not a prerequisite. No `CCLOUD_
-      TOKEN` — the backup gate's live network leg is unverified (§8 row 8).
-      §8.4 crash-window reconciliation (W1-W4) not implemented. Migrations
-      003/004 still blocked on real prerequisites, not a gap.
-      `ENGRAM_TARGET_PROBE_DSN`/`ENGRAM_TARGET_OPERATOR_DSN` still not
-      provisioned. MCP/CloudWatch/ccloud legs of `observe(node)` step 1
-      still unimplemented. 26257 is open right now only because of the
-      user's VPN — treat it as still blocked by default, not fixed.
+PHASE 0 — CLOSED 2026-08-11. PHASE 1 (schema + memory/provider layer) —
+CLOSED same day. PHASE 2 (agent core: nodes + tools + graph) — CLOSED
+2026-08-11. 2026-08-11 = Day 11 of 17; 6 days left for Phase 3.
+⚠️ PHASE BOUNDARY IS A JUDGMENT CALL, STATED NOT ASSUMED: no doc currently
+   defines "Phase 2" explicitly — the original 4-phase breakdown lived in
+   the now-deleted `research/execution_roadmap.md` (pre-pivot, §8 row 6).
+   This session retroactively labels Phase 1 = migrations/DAO/providers,
+   Phase 2 = agent/nodes + agent/tools + agent/graph.py, Phase 3 =
+   everything ILLUSIONIST-side (dashboard/SSE) + remaining ops (lifecycle
+   workers, checkpointer, remaining manual credentials) — a reasonable
+   boundary matching what was actually built, not a rediscovered original.
+DONE  Phase 0 + Phase 1 exit gates PASS (full memory layer + both
+      providers + migrations 001/002 applied live) — detail in archived §7
+      entries, not restated here every session.
+      **PHASE 2 CLOSED, 2026-08-11 — `agent/graph.py` now compiles and runs
+      THE FULL FIVE-NODE LOOP: `observe→recall→reason→gate→act_measure→
+      END`, both conditional edges wired** ("no anomaly → done" after
+      `observe`; "reject/expire → done" after `gate`). The `gate→reason`
+      re-plan-on-measurement-failure edge (LLD §4) is explicitly NOT
+      wired — no loop-prevention design exists yet for how many re-plans
+      to allow before giving up; stated as scoped out, not silently
+      dropped. `agent/tools/sql_operator.py` (independent DDL re-
+      validation, doesn't trust `recipe_renderer` already checked) +
+      `agent/tools/cloud_api.py` (backup gate, tested against REAL Phase-0
+      evidence recovered from a second blanket-`.gitignore` bug — same
+      class as the old `db/` mistake, `fixtures/` was silently excluding
+      real committed evidence) + `agent/nodes/act_measure.py` (ADR-004's
+      ledger/outcome txns) all land this session, closing out every node
+      LLD §5 names. **The actual closing demonstration, through the
+      COMPILED GRAPH itself, not a node called directly:** one
+      `graph.ainvoke()` call — real scenario, real concurrent human
+      approval arriving mid-poll, a real Ollama Cloud proposal, a real
+      `CREATE INDEX` applied via `SqlOperator`, a real measured
+      **27ms → 1ms** latency drop, confirmed afterward in the target
+      cluster's own catalog. A second invocation with the real (fast, no-
+      anomaly) measurement correctly stops at `observe`. **A real timing
+      bug caught and fixed in the test itself, not the graph:** the first
+      run's concurrent-approval helper used a deadline that didn't account
+      for `reason(node)`'s real ~9s Ollama round-trip happening BEFORE
+      `gate` ever creates anything to approve — widened the window;
+      re-ran clean. 131 unit tests + 144 live checks total now pass.
+OPEN (Phase 3, non-gating for Phase 2)  No checkpointer wired — kill-and-
+      resume already lives entirely in `agent/memory/leases.py` (proven
+      independently), additive not a prerequisite. No `CCLOUD_TOKEN` — the
+      backup gate's live network leg is unverified (§8 row 8). §8.4
+      crash-window reconciliation (W1-W4) not implemented. No dashboard/
+      SSE surface (ILLUSIONIST's Phase 3). Migrations 003/004 still
+      blocked on real prerequisites, not a gap. `ENGRAM_TARGET_PROBE_DSN`/
+      `ENGRAM_TARGET_OPERATOR_DSN` still not provisioned. MCP/CloudWatch/
+      ccloud legs of `observe(node)` step 1 still unimplemented. 26257 is
+      open right now only because of the user's VPN — treat it as still
+      blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) wire `gate` and `act_measure` into `agent/graph.py`, replacing the `reason → END` edge with `reason→gate→act_measure→END` (plus `gate`'s own reject/expire → `END` branch) — the actual five-node loop, compiled and invocable, is the single highest-value remaining piece; (2) provision `CCLOUD_TOKEN` (manual, closes the backup-gate live-network gap); (3) `AsyncCockroachDBSaver` bootstrap; (4) provision `ENGRAM_TARGET_PROBE_DSN`/`ENGRAM_TARGET_OPERATOR_DSN` (manual).
+**Next action, in order (Phase 3 starts here):** (1) `AsyncCockroachDBSaver` bootstrap (LLD §6.3) — closes the checkpointer gap, unblocks migration 004; (2) provision `CCLOUD_TOKEN`, `ENGRAM_TARGET_PROBE_DSN`, `ENGRAM_TARGET_OPERATOR_DSN` (manual, all three close named gaps); (3) the dashboard/SSE surface (ILLUSIONIST) — Memory Inspector, the five demo metrics; (4) lifecycle workers (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) on Lambda; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 26 · Wired `gate`+`act_measure` into `agent/graph.py`; declared Phase 2 closed.** Extended `build_graph()` to the full five-node loop: `observe→recall→reason→gate→act_measure→END`, adding `_route_after_gate` alongside the existing `_route_after_observe` — `gate` returns `phase='gate'` on approval (routes to `act_measure`) or `phase='done'` on reject/expiry (routes to `END`), mirroring the pattern already established for `observe`'s own conditional edge. **Explicitly NOT wired, stated rather than silently dropped:** LLD §4's `gate→reason` re-plan-on-measurement-failure edge — `act_measure` already sets `outcome='failure'` on a measured regression, but nothing routes that back to `reason` yet, because a real re-plan loop needs its own loop-prevention design (how many retries before giving up?) that doesn't exist. Rewrote `scripts/smoke_test_graph.py` to invoke the *compiled graph* through the full loop rather than calling nodes directly — a meaningfully different test than `smoke_test_act_measure.py`'s (which called `act_measure` directly): this one proves the LangGraph wiring itself routes correctly end to end. **A real timing bug, caught and fixed in the test, not the graph:** the concurrent-approval helper's deadline started ticking from the moment `graph.ainvoke()` was called, but `reason(node)`'s real Ollama Cloud round-trip (measured ~9s elsewhere this project) runs entirely BEFORE `gate` ever creates a row to approve — the original 12s deadline was already exhausted by the time there was anything to find, so `gate` correctly (if unhelpfully, for the test) expired instead of getting approved. Widened the deadline to 50s and `gate_timeout_s` to 60s; also hardened the test's own assertions to report a clean failure instead of crashing with `TypeError: 'NoneType' object is not subscriptable` when `act_measure` never ran. Re-ran clean: **14/14, first success after the fix**, one `graph.ainvoke()` call producing a real concurrent approval, a real Ollama Cloud proposal, a real applied index, and a real measured **27ms → 1ms** improvement — the exact "watch the state machine execute an end-to-end loop on live ammunition" outcome asked for several sessions ago, now delivered through the actual compiled graph, not the underlying node functions. Added 3 more routing unit tests (`_route_after_gate`'s three cases) to `tests/test_graph.py`. **Declared Phase 2 closed as a stated judgment call, not a rediscovered boundary:** no current doc defines "Phase 2" — the original phase breakdown lived in the deleted, pre-pivot `research/execution_roadmap.md`. This session retroactively labels Phase 1 = schema/DAO/providers (already done), Phase 2 = `agent/nodes`+`agent/tools`+`agent/graph.py` (closed now that all five LLD §5 nodes exist and are wired together), Phase 3 = dashboard/SSE + lifecycle workers + remaining manual credentials — a boundary chosen to match what was actually built, flagged as a choice rather than presented as settled fact. **131 unit tests + 144 live checks now pass in total.**
 
 **2026-08-11 — Session 25 · Wrote + live-verified `sql_operator.py`, `cloud_api.py`, and `act_measure.py` — all five LLD §5 nodes now exist, closing loop demonstrated with a real 27ms→2ms fix.** `agent/tools/sql_operator.py`: allowlisted DDL apply, with its OWN independent re-validation of the forbidden-keyword/multi-statement check, deliberately not importing `recipe_renderer`'s regex — a bug in one validator should never silently disable both layers of the safety core. `agent/tools/cloud_api.py`: the backup gate (LLD §5.5 step 1). **Went back to check what Phase 0 had actually captured before assuming anything:** `docs/phase0-verification.md` §5 (P0-P3) turned out to be an unfilled template with empty checkboxes, but `fixtures/cloudapi-backups-basic.json` — real evidence from 2026-08-03, `200 {"backups": []}` on a live Basic cluster — genuinely existed on disk. **Found it had never been committed:** `.gitignore` blanket-ignored `fixtures/`, the exact same class of mistake as the old blanket `db/` rule from Session 9. Checked both fixture files for secrets (none), narrowed the rule, committed both. `decide_backup_gate()`'s empty-list case is now tested against that REAL capture, not an invented one; the non-empty-response shape remains an explicitly stated assumption (no real example has ever been captured against this account/tier), and the live network call is unverified — no `CCLOUD_TOKEN` exists, logged as a new `docs/blocked-register.md` §8 row, not glossed over. `agent/nodes/act_measure.py` (LLD §5.5 steps 2-6, ADR-004 §8): two new composite `db.py` methods for the ledger and outcome transactions. **Scoped deliberately:** §8.4's crash-window reconciliation (W1-W4) is explicitly NOT implemented — a real, meaningful gap stated outright rather than half-built; procedure-stats updates deferred to the not-yet-written consolidator worker, since there's no established link from a fresh Proposal to an existing procedure_id yet. **A real design gap caught mid-build, before it shipped broken:** designing this node surfaced that `observe(node)` only ever stored the query text NORMALIZED for fingerprinting (literals collapsed to `?`) — not valid, re-runnable SQL — while `act_measure` needs the ORIGINAL text for its own before/after `EXPLAIN ANALYZE`. Fixed by adding `payload["raw_text"]` alongside the existing normalized field in `observe.py`, and documenting both fields' distinct purposes in `agent/state.py`'s `Observation` docstring. **23/23 new unit tests** (12 for the backup gate's decision logic, run against the real fixture; 11 for `act_measure`'s control flow via scripted fake `SqlProbe`/`SqlOperator`/`CloudApiAdapter`/`Database`) **+ 11/11 live, first run, no bugs** — the actual closing demonstration of the project's core value proposition: a real 40,000-row scenario table, a real `CREATE INDEX IF NOT EXISTS` rendered by `recipe_renderer` and applied for real via `SqlOperator`, a genuinely measured latency improvement (**27.0ms → 2.0ms**, ~13x), and the index's existence confirmed afterward by querying the target cluster's own `SHOW INDEXES` — not merely "no exception was raised." Used `override_backup_gate=True` for this run, LLD's own named audited escape hatch, not a workaround of the gate it's replacing. **All five nodes named in LLD §5 now exist and are each individually proven — `agent/graph.py` itself still only compiles `observe→recall→reason→END`, wiring the remaining two in is the very next piece, not a gap discovered late.** 128 unit tests + 130 live checks now pass in total.
 
