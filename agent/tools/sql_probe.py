@@ -154,3 +154,23 @@ class SqlProbe:
             raw_analyze_plan=analyze_plan,
             raw_explain_plan=explain_plan,
         )
+
+    async def get_table_columns(self, table: str, *, schema: str = "public") -> set[str] | None:
+        """LLD §10 point 2's "cross-checked against MCP `get_table_schema`
+        (no fabricated objects)" — that adapter doesn't exist yet, so
+        `agent/tools/recipe_renderer.py` uses this real `information_schema`
+        query instead. Same real signal, different access path; not a mock.
+
+        Returns `None` if the table doesn't exist — the caller must treat
+        that as a validation failure, never as "no columns to check."
+        """
+        if self._conn is None:
+            raise RuntimeError("SqlProbe must be used as an async context manager")
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s",
+                (schema, table),
+            )
+            rows = await cur.fetchall()
+        return {r[0] for r in rows} if rows else None

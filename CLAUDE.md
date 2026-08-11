@@ -106,54 +106,52 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
       APPLIED live · S3 fully closed · full memory layer + both providers +
-      `sql_probe.py` + the first running graph (`observe → recall`) all
-      WRITTEN AND VERIFIED LIVE — detail + every bug found/fixed along the
-      way is in the §7 changelog entries, not restated here every session.
-      **GRAPH EXTENDED TO `reason`, 2026-08-11 — real LLM reasoning now in
-      the loop, not just retrieval.** `agent/providers/ollama_cloud_llm.py`
-      (`OllamaCloudLLM`, the primary rung — LLD §7, wire shape exactly what
-      Session 7's `verify_ollama.py` already measured: native `/api/chat`,
-      `minimax-m3:cloud`) + `agent/schemas.py` (`Proposal`/`Evidence`/
-      `Citation`/`ActionKind`, pydantic — no longer speculative now that
-      `reason(node)` exists to check it against) + `agent/nodes/reason.py`
-      (LLD §5.3 steps 1/2/4/5; step 3's falsification loop reworked as a
-      DETERMINISTIC Python check against `SqlProbe`'s already-real
-      `index_candidate`, never asked of the model itself — the model
-      grading its own falsification evidence would defeat the point).
-      `agent/graph.py` now compiles `observe → recall → reason → END`.
-      **10/10 mocked unit tests** (`OllamaCloudLLM` retry/401/think-tag
-      paths) **+ 13/13 scripted control-flow tests** (`reason()`'s
-      retry-with-feedback loop, exhaustion → `LLMSchemaError`, the
-      no-recommendation-is-not-a-mismatch case) — all deterministic, no
-      real model needed for the control-flow proof. `scripts/smoke_test_
-      graph.py` extended, 12/12, first run, no bugs: the real Ollama Cloud
-      model, given the real optimizer recommendation in its prompt,
-      proposed a matching `create_index` on the first try — no repair
-      round even needed. **Product decision 2026-08-11:** `memory_items`'
-      one-row-per-sweep is intentional episode history — do not dedup it.
-      69 unit tests + 104 live checks total now pass.
+      `sql_probe.py` + the graph through `reason` (`observe → recall →
+      reason → END`) all WRITTEN AND VERIFIED LIVE — detail + every bug
+      found/fixed along the way is in the §7 changelog entries, not
+      restated here every session.
+      **`agent/tools/recipe_renderer.py` WRITTEN AND VERIFIED LIVE,
+      2026-08-11 — LLD §10's "single most important safety control."**
+      Full 5-step validation pipeline (allowlist → real-schema cross-check
+      → identifier regex → forbidden-keyword/multi-statement guard →
+      idempotency) implemented exactly as specified. Step 2 ("no fabricated
+      objects," LLD names MCP `get_table_schema`, which doesn't exist) uses
+      a NEW `SqlProbe.get_table_columns()` (real `information_schema` query
+      on the target cluster) instead — same real signal, different access
+      path, and if no schema is supplied at all the check is SKIPPED, not
+      silently passed (`RenderedRecipe.schema_checked` records which).
+      `ActionKind` reused from `agent.schemas` (Session 22), not redefined.
+      **26/26 unit tests** covering every validation step individually
+      (injection attempts, fabricated columns, non-idempotent output, every
+      identifier-regex edge case) **+ 8/8 live**, first run, no bugs: real
+      scenario table on the target cluster, real columns fetched via
+      `information_schema`, a genuine fabricated column REJECTED against
+      that real data, not a mocked schema. **Product decision 2026-08-11:**
+      `memory_items`' one-row-per-sweep is intentional episode history —
+      do not dedup it. 95 unit tests + 112 live checks total now pass.
 OPEN (non-gating)  No checkpointer wired — kill-and-resume already lives
       entirely in `agent/memory/leases.py` (proven independently); this is
-      additive, not a prerequisite. `gate`/`act_measure` don't exist, so
-      the graph ends at `reason`. Migrations 003/004 still blocked on real
-      prerequisites, not a gap. `ENGRAM_TARGET_PROBE_DSN` still not
-      provisioned. MCP/CloudWatch/ccloud legs of `observe(node)` step 1
-      still unimplemented — `reason(node)`'s falsification check leans on
-      `SqlProbe`'s signal instead of a live `explain_query` MCP tool call,
-      a stated simplification, not a gap waiting to be noticed. 26257 is
+      additive, not a prerequisite. `gate`/`act_measure` don't exist yet,
+      so nothing calls `recipe_renderer.render()` from inside the graph —
+      it's written and proven standalone, wiring it in is the next node.
+      Migrations 003/004 still blocked on real prerequisites, not a gap.
+      `ENGRAM_TARGET_PROBE_DSN` still not provisioned. MCP/CloudWatch/
+      ccloud legs of `observe(node)` step 1 still unimplemented. 26257 is
       open right now only because of the user's VPN — treat it as still
       blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/tools/recipe_renderer.py` (LLD §10, uses `ActionKind` — turns a validated `Proposal` into idempotent, allowlisted SQL, the piece `gate`/`act_measure` need to exist at all); (2) `agent/nodes/gate.py` (LLD §5.4 — ledger txn + approval poll, the next real node); (3) `AsyncCockroachDBSaver` bootstrap (closes the "no checkpointer" gap, unblocks migration 004); (4) provision `ENGRAM_TARGET_PROBE_DSN` on the target cluster (manual).
+**Next action, in order:** (1) `agent/nodes/gate.py` (LLD §5.4 — ledger txn + `remediation_actions`/`approvals` rows + approval poll, the next real node, now that `recipe_renderer.py` exists to render the SQL it stores); (2) `AsyncCockroachDBSaver` bootstrap (closes the "no checkpointer" gap, unblocks migration 004); (3) provision `ENGRAM_TARGET_PROBE_DSN` on the target cluster (manual); (4) `agent/tools/sql_operator.py` (LLD §7 — the actual DDL-applying adapter `act_measure(node)` will need once `gate` exists).
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 23 · Wrote + live-verified `agent/tools/recipe_renderer.py` — LLD §10's safety core.** Implemented the full 5-step validation pipeline exactly as specified: allowlist check, real-schema cross-check, identifier regex, forbidden-keyword/multi-statement guard, idempotency. Step 2 ("cross-checked against MCP `get_table_schema`, no fabricated objects") again hits the same recurring gap as `observe`/`reason` — MCP doesn't exist — so a new `SqlProbe.get_table_columns()` method (real `information_schema.columns` query against the target cluster) substitutes: same real signal, different access path. **Stated, not silently assumed:** if a caller doesn't supply `known_columns` at all, step 2 is explicitly SKIPPED and `RenderedRecipe.schema_checked=False` records that fact on the result — a fabricated column only gets caught when real schema data is actually provided, and the function is honest about which happened rather than implying step 2 always ran. Reused `ActionKind` from `agent.schemas` (added last session) rather than redefining a second competing enum, even though the LLD's own shown snippet uses uppercase member names — the wire *values* (`"create_index"`/`"analyze_table"`) match exactly, which is what actually matters; only the Python-side member-name casing differs, a cosmetic note not a functional one. Pure, synchronous, dependency-free by design — the safety core shouldn't need a live connection to prove it rejects a bad proposal. **26/26 unit tests**, covering every validation step individually including several real injection-attempt strings (`"orders; DROP TABLE users"`, etc.) and every identifier-regex edge case. **8/8 live**, first run, no bugs: built a real scenario table on the target cluster, fetched its actual columns via `information_schema`, then proved a genuinely fabricated column gets rejected against that real data (not a mocked schema), and that a nonexistent table's `None` column set is treated as a hard rejection, not an empty-but-valid table. **95 unit tests + 112 live checks now pass in total.**
 
 **2026-08-11 — Session 22 · Wrote + live-verified `ollama_cloud_llm.py` + `reason.py` — extended the graph to real LLM reasoning.** `agent/providers/base.py` gained `LLMProvider`/`LLMResult` (deferred since Session 16, no longer speculative now that something implements it). `agent/providers/ollama_cloud_llm.py`'s wire shape is not a fresh guess — it's exactly what `verify_ollama.py` already measured and gated PASS back in Session 7: native `/api/chat`, not the OpenAI-compatible shape; `<mm:think>` stripping kept as defense-in-depth per the Session 7 correction, not because a leak was re-observed. `agent/schemas.py` (new): `Proposal`/`Evidence`/`Citation`/`ActionKind`, pydantic, split from `agent/state.py`'s TypedDicts on purpose — real validation needs a different contract than a checkpoint-safe dict, and `ActionKind` is shared with the not-yet-written `recipe_renderer.py`. **`agent/nodes/reason.py` reworks LLD §5.3 step 3's falsification loop rather than implementing it as written**, stated explicitly: the LLD assumes a live `explain_query` MCP tool the model calls mid-conversation, which doesn't exist; instead, the model's proposed `(table, columns)` is checked in Python against `SqlProbe`'s already-real `index_candidate` (captured back in `observe(node)`) — never asked of the model itself, since a model grading its own falsification evidence defeats the point of it being an external check. Also merged two LLD bounds ("rounds < 3" for falsification, "1 repair turn" for schema failure) into one round counter, a stated simplification not a silent blend. **10/10 mocked `OllamaCloudLLM` unit tests** (retry/401/think-tag paths, same `httpx.MockTransport` pattern as `CohereEmbeddings`) **+ 13/13 scripted `reason()` control-flow tests** using a fake `LLMProvider`/`Database` — deterministic proof of the retry-with-feedback loop, exhaustion → `LLMSchemaError`, and the "no recommendation = inconclusive, not a mismatch" rule, none of which depend on real model behavior to verify. `agent/graph.py` now wires `recall → reason → END` (previously `recall → END`); `build_graph()` takes an `llm` argument. `scripts/smoke_test_graph.py` extended and re-run, 12/12, **first run, no bugs**: the real Ollama Cloud model, shown the real optimizer recommendation in its prompt, proposed a `create_index` matching it on the very first call — no repair round needed, though the code path for one is proven separately by the scripted tests. **69 unit tests + 104 live checks now pass in total.**
 

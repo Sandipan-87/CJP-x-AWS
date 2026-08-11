@@ -93,7 +93,13 @@ jobs:
           --target-sslrootcert "$(pwd)/target-ca.crt"
           --memory-sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings/Ollama mocks + observe/sql_probe/graph/reason helpers, no cluster/secrets needed)
+      - name: Run the recipe_renderer + SqlProbe schema-introspection smoke test (safety core, real schema)
+        env:
+          ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}
+        run: python scripts/smoke_test_recipe_renderer.py --target-sslrootcert "$(pwd)/target-ca.crt"
+
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings/Ollama mocks + observe/sql_probe/graph/reason/recipe_renderer helpers, no cluster/secrets needed)
         run: >
           pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py
-          tests/test_sql_probe.py tests/test_graph.py tests/test_ollama_cloud_llm.py tests/test_reason.py -v
+          tests/test_sql_probe.py tests/test_graph.py tests/test_ollama_cloud_llm.py tests/test_reason.py
+          tests/test_recipe_renderer.py -v
