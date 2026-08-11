@@ -12,13 +12,19 @@ this app ever holds. Approve/Reject in `ApprovalQueuePanel.tsx` call this route 
 route returns 503 and the button shows that as an inline error — not a special case, just what
 "the request failed" looks like.
 
-**Live-verified end-to-end without a real AWS deployment**, using
-`scripts/local_approvals_api_shim.py` (a local dev-only stand-in for API Gateway that runs the
-real `workers/approvals/handler.py` code): seeded a real pending approval, clicked the real
-Approve button in a real browser, watched a real `200` come back, and watched the Approval Queue
-AND Action Feed panels update to "approved" on their own via the SSE feed — no page reload. That
-run also caught a real bug (see `workers/approvals/handler.py`'s own comment): a non-UUID
-`approval_id` crashed the handler instead of returning 400; fixed and covered by a new test.
+**Live-verified twice: once against a local shim, once against the real deployed AWS stack.**
+First pass used `scripts/local_approvals_api_shim.py` (a local dev-only stand-in for API Gateway
+that runs the real `workers/approvals/handler.py` code) — seeded a real pending approval, clicked
+the real Approve button, watched a real `200` come back, and watched the Approval Queue AND
+Action Feed panels update to "approved" on their own via the SSE feed, no page reload. That run
+caught a real bug (see `workers/approvals/handler.py`'s own comment): a non-UUID `approval_id`
+crashed the handler instead of returning 400; fixed and covered by a new test. **Then, once
+`infra/` was actually deployed (2026-08-12, `infra/README.md`), the same click was repeated
+against the real API Gateway + Lambda in AWS** — real `200`, and a direct DB query afterward
+confirmed `status='approved'`, `channel='dashboard'` exactly per LLD §11.2/§11.3.
+`dashboard/.env.local` now points at the real endpoint by default; `ENGRAM_APPROVALS_API_URL=
+http://localhost:8787` + `ENGRAM_APPROVALS_API_KEY=local-dev-key` (the shim) remains available
+for offline testing.
 
 ## Setup
 

@@ -362,46 +362,75 @@ DONE (Phase 3, chunk 5)  **API Gateway + Lambda for POST /approvals/{id}
       `CCLOUD_TOKEN` gaps before it; the SQL role itself is still fully
       provisioned and verified, only the Secrets Manager write is
       pending. **147 Python unit tests pass in total** (up from 135).
-OPEN (Phase 3, non-gating)  **Actual `cdk deploy` not run** -- pending the
-      user granting broader IAM permissions (their explicit choice this
-      session); once granted, `cdk bootstrap` then `cdk deploy` from
-      `infra/`, then wire the real endpoint/key into
-      `dashboard/.env.local`, replacing the local shim. The
-      `engram/approver-dsn` Secrets Manager secret also isn't created yet
-      for the same IAM reason -- `ENGRAM_APPROVER_DSN` in the local `.env`
-      is real and works for local testing (the shim reads it directly),
-      but the real deployed Lambda will need the Secrets Manager path once
-      permissions allow it. `agent/nodes/act_measure.py`'s own smoke test
+DONE (Phase 3, chunk 6)  **`cdk deploy` actually run, 2026-08-12 --
+      real Lambda + API Gateway now live in account `532749777349`,
+      `us-east-1`, verified end to end against the REAL infrastructure,
+      not just the local shim.** User created a dedicated `engram-deploy`
+      IAM user with a custom least-privilege policy (scoped to CDK's
+      bootstrap naming convention, NOT `AdministratorAccess`) -- both
+      `cdk bootstrap` and `cdk deploy` succeeded on the FIRST real attempt
+      with that policy, a real confirmation the scoping was right, not
+      just plausible. **The `engram/approver-dsn` Secrets Manager gap from
+      last chunk is now closed for real**, created directly with
+      `engram-deploy`'s credentials (which do carry
+      `secretsmanager:CreateSecret`/`PutSecretValue` scoped to that one
+      ARN) rather than by re-running `bootstrap_approver_role.py` (which
+      still correctly fails under `engram-phase0` -- confirmed, not just
+      assumed unchanged). Retrieved the real API key value
+      (`aws apigateway get-api-key --include-value`) and wired the real
+      endpoint + key into `dashboard/.env.local`, replacing the local
+      shim as the default. **Live-verified twice, deliberately, not just
+      once:** first a direct HTTP call against the real endpoint (200
+      approve / 409 already-decided / 404 unknown / 400 malformed, all
+      correct) -- catching one genuine, informative AWS quirk along the
+      way: the very first request against a freshly created API key
+      returned `403 Forbidden` at the API Gateway layer (never reached the
+      Lambda), a known ~30s propagation delay for new API keys/usage
+      plans, not a bug; a retry moments later succeeded cleanly. Second,
+      the actual closing proof: a real browser click on the dashboard's
+      real Approve button, through the real Next.js proxy route, the real
+      API Gateway, the real Lambda, ending in a real `UPDATE approvals`
+      -- confirmed directly by query afterward: `status='approved'`,
+      `decided_by='dashboard-user'`, `channel='dashboard'`, exactly LLD
+      §11.2's own spec. Cleaned up every disposable task/action/approval
+      row created during verification (confirmed by direct query, not
+      assumed). `infra/README.md` and `dashboard/README.md` updated to
+      record the live deployment, the real IAM policy that worked, and
+      the propagation-delay finding for whoever redeploys next.
+OPEN (Phase 3, non-gating)  `agent/nodes/act_measure.py`'s own smoke test
       still uses `override_backup_gate=True` rather than the now-real
-      network path -- wiring a live `CloudApiAdapter` through an actual
-      `act_measure` run is real follow-up, not done yet. `CCLOUD_TOKEN`
-      hasn't been added as a GitHub Actions repo secret yet (local `.env`
-      only). §8.4 crash-window reconciliation (W1-W4) not implemented. The
-      dashboard's `metrics`/`webhooks` Lambda endpoints (LLD §11.2) and
-      the lifecycle-worker Lambdas (`consolidator`/`decayer`/
-      `embedding_backfill`, LLD §9) are NOT built -- only `approvals` this
-      chunk. Memory Inspector's similarity/citations gap (prior chunk) not
-      closed. Migration 003 still blocked on a real prerequisite (seed
-      corpus must exist first, invariant #1) -- not a gap.
-      `thread_id`/`task_id` reconciliation (`tasks.checkpoint_thread_id`)
-      not wired -- nothing mints or persists a `thread_id` yet, since
-      `main.py` (the SQS consumer that would own that) doesn't exist.
-      MCP/CloudWatch/ccloud legs of `observe(node)` step 1 still
-      unimplemented. 26257 is open right now only because of the user's
-      VPN -- treat it as still blocked by default, not fixed.
-BLOCKING  One manual step (broader IAM permissions for CDK deploy, handed
-      to the user this session -- see above) and time. (26257 currently
-      open via VPN; the underlying squid block is unchanged, so don't
-      assume it stays open next session.)
+      backup-gate network path -- wiring a live `CloudApiAdapter` through
+      an actual `act_measure` run is real follow-up, not done yet.
+      `CCLOUD_TOKEN` hasn't been added as a GitHub Actions repo secret yet
+      (local `.env` only). §8.4 crash-window reconciliation (W1-W4) not
+      implemented. The dashboard's `metrics`/`webhooks` Lambda endpoints
+      (LLD §11.2) and the lifecycle-worker Lambdas (`consolidator`/
+      `decayer`/`embedding_backfill`, LLD §9) are NOT built -- only
+      `approvals` exists in `workers/`/`infra/` so far. Memory Inspector's
+      similarity/citations gap (an earlier chunk) not closed. Migration
+      003 still blocked on a real prerequisite (seed corpus must exist
+      first, invariant #1) -- not a gap. `thread_id`/`task_id`
+      reconciliation (`tasks.checkpoint_thread_id`) not wired -- nothing
+      mints or persists a `thread_id` yet, since `main.py` (the SQS
+      consumer that would own that) doesn't exist. MCP/CloudWatch/ccloud
+      legs of `observe(node)` step 1 still unimplemented. 26257 is open
+      right now only because of the user's VPN -- treat it as still
+      blocked by default, not fixed.
+BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
+      unchanged, so don't assume it stays open next session. No credential
+      or IAM gaps block Phase 3 work anymore -- the approvals path is
+      fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) once the user grants broader IAM permissions, `cdk bootstrap` + `cdk deploy` from `infra/`, verify the real endpoint, wire it into `dashboard/.env.local`; (2) create the `engram/approver-dsn` Secrets Manager secret (same IAM grant likely covers this); (3) `metrics`/`webhooks` Lambda endpoints (LLD §11.2) and lifecycle-worker Lambdas (LLD §9); (4) `main.py` (SQS consumer/entrypoint) -- mints a `thread_id`, reconciles it into `tasks.checkpoint_thread_id` (Phase 3 chunk 1's gap), and is also where a real (non-override) backup-gate call first gets exercised end to end; (5) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (6) the `gate→reason` re-plan edge, once a loop-prevention design exists.
+**Next action, in order (Phase 3 continues):** (1) `metrics`/`webhooks` Lambda endpoints (LLD §11.2) and lifecycle-worker Lambdas (LLD §9), reusing the `engram-deploy` IAM identity and `infra/` CDK patterns now proven to work; (2) `main.py` (SQS consumer/entrypoint) -- mints a `thread_id`, reconciles it into `tasks.checkpoint_thread_id` (Phase 3 chunk 1's gap), and is also where a real (non-override) backup-gate call first gets exercised end to end; (3) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (4) the `gate→reason` re-plan edge, once a loop-prevention design exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-12 — Session 32 · `cdk deploy` actually run — the approvals Lambda + API Gateway are live in real AWS, verified end to end against the real infrastructure.** Picked up exactly where Session 31 left off: the user created a dedicated `engram-deploy` IAM user with a custom least-privilege policy (iteratively corrected together -- first attempt hit IAM's 2,048-character inline-policy limit because the policy was being created from the user's own page rather than as a standalone managed policy under IAM -> Policies, which has a 6,144-character limit; same JSON, different creation path, fixed it) scoped to CDK's default bootstrap naming convention -- deliberately NOT `AdministratorAccess`, keeping this project's least-privilege discipline intact per the user's own explicit "don't think about deadlines" instruction. **Both `cdk bootstrap` and `cdk deploy` succeeded on the very first real attempt with that scoped policy** -- a genuine, live confirmation the scoping was correct, not just plausible on paper. One real speed bump along the way, handled correctly rather than worked around: Claude Code's own safety classifier blocked the first `cdk deploy` attempt (real, billable, hard-to-reverse infrastructure creation) even after the user had directed every step leading up to it -- explained why to the user and asked directly rather than retrying silently or pretending the action succeeded; user approved the retry and it deployed cleanly. **Closed the `engram/approver-dsn` Secrets Manager gap from Session 31 for real**, using `engram-deploy`'s own scoped `secretsmanager:CreateSecret`/`PutSecretValue` permission -- confirmed separately that `engram-phase0` still correctly cannot do this (unchanged, not re-tested and assumed the same). Retrieved the real API key value via `aws apigateway get-api-key --include-value` and wrote both it and the real endpoint URL into `dashboard/.env.local` directly (values never printed to any log or terminal output), replacing the local shim as the default. **Live-verified twice, on purpose, not just once:** first a direct HTTP call against the real deployed endpoint -- 200/409/404/400 all correct -- which surfaced one genuinely informative AWS quirk: the very first request against a freshly created API key came back `403 Forbidden` at the API Gateway layer, never reaching the Lambda at all. Diagnosed correctly as a known ~30-second propagation delay for new API keys/usage plans rather than assumed to be a bug in the stack -- confirmed by simply retrying moments later, which succeeded cleanly. Second, the actual closing proof: seeded a real pending approval, opened the real dashboard in a real browser, clicked the real Approve button, and traced it all the way through -- Next.js proxy route to the real API Gateway to the real Lambda to a real `UPDATE approvals` -- confirmed directly by querying the database afterward: `status='approved'`, `decided_by='dashboard-user'`, `channel='dashboard'`, matching LLD §11.2's spec exactly, not approximately. Cleaned up every disposable task/action/approval row created during verification, confirmed by direct query rather than assumed. Deleted the temporary shell script holding plaintext deploy credentials once no longer needed. Updated `infra/README.md` (now records the live deployment, the working IAM policy, and the propagation-delay finding) and `dashboard/README.md` (now documents both the shim-based and real-AWS verification passes) for whoever redeploys or extends this next. No code changes this session -- documentation and real infrastructure only; all 147 Python unit tests remain passing, unaffected.
 
 **2026-08-11 — Session 31 · Committed all pending Phase 3 work; built + unit-tested + live-verified the approvals API Gateway + Lambda end to end without any real AWS deployment; asked before attempting one.** Committed everything from Sessions 27–30 (checkpointer, target/reader roles, CCLOUD_TOKEN, dashboard) in one commit (`95ce614`) before starting new work, per explicit request. Then built the dashboard's mutation path (LLD §11.2, `POST /approvals/{id}`): new `workers/common/db.py` + `workers/approvals/handler.py`, new `infra/` (AWS CDK Python, HLD §6's locked IaC choice). **A fourth least-privilege SQL role was a real, previously-unnoticed gap**: neither `engram_agent` (too broad) nor `engram_reader` (SELECT-only) can perform the CAS UPDATE this endpoint needs — HLD's own secrets table loosely groups "memory-reader-dsn" under "(dashboard Lambda)" but that's imprecise for a write path. New migration `006_approver_role.sql` + `scripts/bootstrap_approver_role.py` (same live-verification pattern as every prior role this project has provisioned) closed it — 6/7 checks, the one failure being `secretsmanager:PutSecretValue` correctly denied for `engram-phase0`, the exact same least-privilege-working-as-intended shape as the S3 bucket and `CCLOUD_TOKEN` gaps before it. **A real environment constraint shaped a real design decision, not silently worked around:** no Docker is available in this dev environment, which CDK's usual Python-Lambda bundling needs for `psycopg[binary]`'s native extension — switched `workers/` to `pg8000` (pure Python, no native extension) specifically so `infra/build.py` could hand-assemble the Lambda package with a plain `pip install --target`, no cross-compilation step at all; confirmed connecting to the real cluster with it before writing anything that depended on it. `cdk synth` (fully local, no real AWS credentials needed) succeeded on the first real run, and inspecting the generated template confirmed the Lambda's IAM policy is scoped to exactly `secretsmanager:GetSecretValue`/`DescribeSecret` on the one `engram/approver-dsn` secret ARN — the project's S3-ARN-scoping discipline carried into a new AWS service, not just SQL grants. **Live-verified end to end WITHOUT deploying anything to real AWS**, using a new local-only shim (`scripts/local_approvals_api_shim.py`) that runs the REAL handler code behind a local HTTP server standing in for API Gateway: `scripts/smoke_test_approvals_lambda.py` passed 6/6 against the real handler and the real DB (200/409/404/204/400 all correct), and then — the actual closing proof, not just an API-level check — a real click on the dashboard's real Approve button, through the real Next.js proxy route (`dashboard/src/app/api/approvals/[approvalId]/route.ts`, holding the API Gateway key server-side only, exactly mirroring how `engram_reader` is the only DB credential the SSE routes hold), produced a real `200`, a real DB write, and the Action Feed + Approval Queue panels updating to "approved" on their own via the existing SSE feed — no page reload, exactly LLD §11.3's own demo narrative. **That live click immediately caught a real bug, not assumed away:** an earlier manual test with a non-UUID `approval_id` (`"does-not-exist"` as a literal string, not a syntactically valid-but-nonexistent UUID) reached the UPDATE statement and CockroachDB raised a type-parse error there instead of the query cleanly matching 0 rows — an unhandled crash for what should have been an ordinary 400. Fixed with a `uuid.UUID()` validation check before the query ever runs; added a regression test and fixed several existing mocked tests that had been using non-UUID placeholder IDs like `"aid-1"` (would have started failing against the new validation) — `tests/test_workers_approvals.py` now 13/13. **Asked the user explicitly before attempting `cdk deploy`**, rather than either assuming permission or assuming refusal: real, billable AWS resource creation (Lambda, API Gateway, an IAM role) under credentials already known this session to be deliberately narrow is exactly the kind of hard-to-reverse, security-relevant action that warrants asking first. User chose to grant broader IAM permissions themselves before any deploy attempt — handed over the specific permission set needed (CDK bootstrap is conventionally broad: CloudFormation, S3, ECR, IAM, SSM; plus per-stack Lambda/API Gateway/IAM-role/Secrets-Manager access), recommended as a NEW identity kept separate from `engram-phase0`. **147 Python unit tests pass in total** (up from 135) — `tests/test_workers_approvals.py` is new (13 tests), nothing else changed under `agent/`. `infra/.build/` and `cdk.out/` added to `.gitignore` (generated artifacts, not source).
 
