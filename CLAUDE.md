@@ -105,38 +105,46 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
 ⚠️ Schedule risk > provider risk. Docs are pivot-consistent; code now exists
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
-      APPLIED live · `agent/memory/{db,scoring,recall,leases}.py` all
-      WRITTEN AND VERIFIED LIVE (59 checks) · **S3 fully closed** ·
-      **`agent/providers/{base,cohere_embed}.py` WRITTEN AND VERIFIED,
-      2026-08-11** — `CohereEmbeddings` (LLD §7, the only embedder, no
-      ladder): 9/9 mocked unit tests (T3, LLD §14 — dimension mismatch
-      rejected not written, 429 retry-then-succeed, 401 never retried, all
-      client-side validation) + 5/5 live checks against the real Cohere API
-      (batch embed, single query embed, 1024-dim confirmed on every vector).
-      New exceptions `EmbeddingProviderError`/`EmbeddingDimensionError` in
-      `agent/errors.py`. 23 unit tests + 50 live checks total now pass
-      across everything written so far.
+      APPLIED live · `agent/memory/{db,scoring,recall,leases}.py` +
+      `agent/providers/{base,cohere_embed}.py` all WRITTEN AND VERIFIED
+      LIVE (73 checks) · **S3 fully closed** ·
+      **`agent/memory/embeddings.py` WRITTEN AND VERIFIED, 2026-08-11** —
+      the write-path glue closing D9 ("never embed the same content
+      twice"): hash → cache lookup → provider only on a miss → cache
+      write. `db.py` gained `get_cached_embeddings`/`insert_embedding_cache`
+      plus a new `_parse_vector_literal` — measured live that a raw
+      `VECTOR` column comes back as a bracket-literal `str`, not a list,
+      something no prior method needed to know. `scripts/smoke_test_
+      embeddings.py`, 10/10 against real Cohere + the live cluster: a
+      `CountingProvider` wrapper PROVES a repeat call never reaches Cohere
+      at all (not just assumed), a mixed cached/new-text call only sends
+      the new text, and round-tripped vectors are byte-identical to the
+      originals. First run, no bugs. `recall()` can now realistically take
+      raw incident text once a caller wires `embed_and_cache` in front of
+      it — that wiring itself is the next graph-node-level piece, not this
+      chunk. 23 unit tests + 60 live checks total now pass.
 OPEN (non-gating)  Migrations 003 (vector index) and 004 (checkpoint TTL)
       NOT YET applied — real prerequisites (seed corpus; `saver.setup()`)
-      haven't happened, correct sequencing not a gap. `agent/memory/
-      embeddings.py` (write-path + fingerprint cache) not yet written, so
-      `recall()` still takes a precomputed vector, not raw incident text —
-      `cohere_embed.py` unblocks that but doesn't itself close it.
-      `agent/providers/base.py` still has no `LLMProvider` ABC (lands with
-      `ollama_cloud_llm.py`, deliberately deferred, not a gap). 26257 is
-      open right now only because of the user's VPN — treat it as still
+      haven't happened, correct sequencing not a gap. `agent/providers/
+      base.py` still has no `LLMProvider` ABC (lands with
+      `ollama_cloud_llm.py`, deliberately deferred, not a gap). No graph
+      node exists yet — `agent/memory/*` + `agent/providers/*` are still
+      isolated, individually-verified modules, not a running agent. 26257
+      is open right now only because of the user's VPN — treat it as still
       blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `agent/memory/embeddings.py` (write-path embedding + fingerprint cache, LLD's D9 "never embed the same content twice" — the piece that actually lets `recall()` take raw text via `CohereEmbeddings`); (2) migrations 003/004 once their prerequisites are in place; (3) the first graph node (`agent/nodes/observe.py` or `recall.py`) — the point where `agent/memory/*` stops being isolated modules and becomes a running agent.
+**Next action, in order:** (1) the first LangGraph node (`agent/nodes/recall.py` or `observe.py`) — the point where these become a running agent, not isolated modules; (2) migrations 003/004 once their prerequisites are in place; (3) `agent/config.py` (pydantic-settings, LLD §2) — several modules still read raw env vars directly as a stated, temporary simplification.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 17 · Wrote + live-verified `agent/memory/embeddings.py` — closes D9, the write-path cache.** `embed_and_cache(db, provider, texts, input_type)`: hashes each text (sha256), checks `embedding_cache` via two new `db.py` methods (`get_cached_embeddings`, `insert_embedding_cache`), calls the provider only for misses (chunked to its batch ceiling), writes the cache row on every miss. A cache hit under a *different* `model_id` is treated as a miss, not a hit — invariant #2's "different models are incomparable spaces" enforced at the read, not just documented. **Real bug caught before it shipped, not after:** selecting a raw `VECTOR` column back out returns a plain Python `str` in CockroachDB's own bracket-literal syntax, not a list — psycopg3 has no adapter for it, and nothing before this chunk had ever read one back (only written them, or used them inside `<=>`). Tested directly against the live cluster before writing the cache-read method, not assumed; added `_parse_vector_literal` (the inverse of the existing `_vector_literal`) once confirmed. **Verified live, first run, no bugs** — `scripts/smoke_test_embeddings.py`, 10/10, the first test in this repo to exercise the *entire* write-path chain for real (Cohere → cache → CockroachDB → cache hit): a `CountingProvider` wrapper around the real `CohereEmbeddings` *proves* — call-count asserted, not assumed — that a repeat call never reaches Cohere at all, a mixed cached/new-text call sends only the new text, and cached vectors round-trip byte-identical to the originals. Wired into `db-smoke-test.yml` (needs a new `COHERE_API_KEY` repo secret to actually run there — not yet added, that step will fail auth until it is; every other step is unaffected). **23 unit tests + 60 live checks now pass in total.** `recall()` can realistically take raw incident text once something wires `embed_and_cache` in front of it — that wiring is graph-node-level work, next chunk, not this one.
 
 **2026-08-11 — Session 16 · Wrote + verified `agent/providers/{base,cohere_embed}.py` — the real embedding provider.** `agent/providers/base.py`: `EmbeddingProvider` ABC only — `LLMProvider` deliberately deferred to `ollama_cloud_llm.py`, not written speculatively. `agent/providers/cohere_embed.py`: `CohereEmbeddings`, a thin `httpx` client (not the `cohere` SDK, same choice LLD §7 leaves open) implementing `embed(texts, input_type)`. Enforces every hard limit from LLD §7's adapter table itself, not just documents them: `input_type` required with no default (`ValueError` if invalid, before any HTTP call); batch capped at 96, rejected client-side rather than silently sub-batched; every returned vector's width checked, and a mismatch raises the new `EmbeddingDimensionError` — "never degrade, never write, park immediately" (LLD §16) — while a *transient* failure (429/5xx/transport) retries 3× with jitter before raising the new `EmbeddingProviderError`, and a 401 is never retried (not transient, a config problem). Added a `client:` constructor seam specifically so `tests/test_cohere_embed.py` (T3, LLD §14) can exercise all of this against `httpx.MockTransport` — 9/9 pass, no network, no real key, covering exactly what T3 names ("a non-1024-width embedding response is rejected, not written") plus the retry/auth paths. Then ran `scripts/smoke_test_cohere_embed.py` against the real Cohere API (same account as `verify_cohere.py`'s Phase-0 probe, but through the actual provider class this time) — 5/5 pass: batch-of-3 and single-query embeds both return correct 1024-dim vectors, empty input short-circuits, invalid `input_type` rejected before any request. Added `httpx` to `requirements.txt` (first time a runtime dep beyond psycopg was needed). **23 unit tests + 50 live checks now pass in total** across every module written so far. **Not done:** `agent/memory/embeddings.py` (write-path + fingerprint cache) — `recall()` still takes a precomputed vector, this chunk unblocks that path but doesn't close it.
 

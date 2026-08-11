@@ -71,6 +71,15 @@ def _vector_literal(vec: Sequence[float]) -> str:
     return "[" + ",".join(repr(float(x)) for x in vec) + "]"
 
 
+def _parse_vector_literal(s: str) -> list[float]:
+    """Inverse of `_vector_literal`. Measured 2026-08-11: selecting a raw
+    VECTOR column back out returns a plain Python `str` in this same
+    bracket-literal syntax, not a list — psycopg3 has no adapter for it
+    (recall_ann/insert_memory_item never needed this because they only ever
+    write vectors or use them inside `<=>`, never read one back raw)."""
+    return [float(x) for x in s.strip("[]").split(",")]
+
+
 def _validate_as_of(as_of_ts: str) -> str:
     """§6.7: AS OF SYSTEM TIME takes no placeholder — CockroachDB only allows a
     constant literal there (issue #30955). Validate strictly before ever
@@ -361,6 +370,46 @@ class Database:
             """,
             ([str(x) for x in item_ids],),
         )
+
+    # ------------------------------------------------------- embedding cache (D9)
+
+    async def get_cached_embeddings(self, content_hashes: Sequence[str]) -> dict[str, dict]:
+        """D9: "never embed the same content twice." Keyed by
+        `content_sha256`; returns whatever is stored, `model_id` included —
+        the caller (`agent/memory/embeddings.py`) decides whether a hit
+        under a DIFFERENT model still counts as a hit. It doesn't (invariant
+        #2: different models are mutually incomparable vector spaces), but
+        that decision belongs one layer up, not baked into this DAO method.
+        """
+        if not content_hashes:
+            return {}
+        rows = await self._read(
+            "SELECT content_sha256, embedding, model_id FROM embedding_cache "
+            "WHERE content_sha256 = ANY(%s)",
+            (list(content_hashes),),
+        )
+        return {
+            r["content_sha256"]: {
+                "embedding": _parse_vector_literal(r["embedding"]),
+                "model_id": r["model_id"],
+            }
+            for r in rows
+        }
+
+    async def insert_embedding_cache(
+        self, content_sha256: str, embedding: Sequence[float], model_id: str
+    ) -> None:
+        """`ON CONFLICT DO NOTHING` — this is a cache keyed by content, not a
+        ledger. A concurrent writer embedding the same content at the same
+        time is a race, not an error: both computed the same vector for the
+        same input, so whichever row lands first is correct either way.
+        """
+        async with self._write_cursor() as cur:
+            await cur.execute(
+                "INSERT INTO embedding_cache (content_sha256, embedding, model_id) "
+                "VALUES (%s, %s::VECTOR(1024), %s) ON CONFLICT (content_sha256) DO NOTHING",
+                (content_sha256, _vector_literal(embedding), model_id),
+            )
 
     # --------------------------------------------------------------- leases
 

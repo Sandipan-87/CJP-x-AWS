@@ -44,5 +44,14 @@ jobs:
           ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
         run: python scripts/smoke_test_leases.py --sslrootcert "$(pwd)/cluster-ca.crt"
 
+      - name: Run the embeddings write-path smoke test (D9 cache, real Cohere + cluster)
+        # Needs an additional repo secret, COHERE_API_KEY, on top of ENGRAM_MEMORY_DSN.
+        # Not yet added as of this workflow's authoring -- this step will fail with an
+        # auth error until it is; every other step in this file is unaffected.
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: python scripts/smoke_test_embeddings.py --sslrootcert "$(pwd)/cluster-ca.crt"
+
       - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks, no cluster/secrets needed)
         run: pytest tests/test_scoring.py tests/test_cohere_embed.py -v
