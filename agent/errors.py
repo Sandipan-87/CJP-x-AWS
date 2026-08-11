@@ -3,9 +3,10 @@
 Grown incrementally as each module needs one. `StaleLeaseError` is raised by
 `agent/memory/db.py` (§6.1); `LeaseAcquireTimeoutError` by `agent/memory/
 leases.py` (§6.4's retry/backoff policy layer); `EmbeddingProviderError` and
-`EmbeddingDimensionError` by `agent/providers/cohere_embed.py` (§7). The rest
-of the taxonomy (`LlmRateLimitError`, `McpTimeoutError`, ...) lands with the
-modules that actually raise them.
+`EmbeddingDimensionError` by `agent/providers/cohere_embed.py` (§7);
+`LlmRateLimitError`/`LlmTimeoutError` by `agent/providers/ollama_cloud_llm.py`
+and `LLMSchemaError` by `agent/nodes/reason.py` (§16). The rest of the
+taxonomy (`McpTimeoutError`, ...) lands with the modules that raise them.
 """
 
 from __future__ import annotations
@@ -77,3 +78,30 @@ class EmbeddingDimensionError(EngramError):
         self.got = got
         self.expected = expected
         super().__init__(f"embedding dimension mismatch: got {got}, expected {expected}")
+
+
+class LlmRateLimitError(EngramError):
+    """Raised only after retries are exhausted, never on the first 429.
+
+    Recovery per §16: backoff+jitter ×3 (done inside the provider) → promote
+    the next ladder rung — a config change (`ENGRAM_LLM_PROVIDER`), not a
+    code change. After 3 rung failures: circuit open, park, alert.
+    """
+
+
+class LlmTimeoutError(EngramError):
+    """Raised only after retries are exhausted. Same recovery as
+    `LlmRateLimitError` — backoff ×3 inside the provider, then promote the
+    next ladder rung."""
+
+
+class LLMSchemaError(EngramError):
+    """The model's tool-call output failed pydantic validation
+    (`agent.schemas.Proposal`) even after the one repair turn LLD §5.3 step 4
+    allows. Recovery per §16: park (human can retry) — never guess at a
+    malformed proposal's intent.
+    """
+
+    def __init__(self, errors: str) -> None:
+        self.errors = errors
+        super().__init__(f"Proposal schema validation failed after repair attempt: {errors}")

@@ -1,19 +1,22 @@
 """Engram · agent/graph.py — LangGraph StateGraph assembly.  [BRAINS]
 
-design/02-low-level-design.md §4. **First real use of the `langgraph`
-package in this repo.** Wires the two nodes that exist — `observe`,
-`recall` — per the diagram's first edge and observe's own conditional edge
-("no anomaly → done"):
+design/02-low-level-design.md §4. Wires the three nodes that exist —
+`observe`, `recall`, `reason` — per the diagram's first two edges and
+observe's own conditional edge ("no anomaly → done"):
 
-    observe ──► recall ──► (done)
+    observe ──► recall ──► reason ──► (done)
       │
       ▼
     (no anomaly → done)
 
-`reason`/`gate`/`act_measure` don't exist yet, so this graph currently ends
-at `recall` → END — not because the LLD's diagram stops there, but because
+`gate`/`act_measure` don't exist yet, so this graph currently ends at
+`reason` → END — not because the LLD's diagram stops there, but because
 there is nothing real to wire past it yet (coding-conduct rule 2: no
-speculative stub nodes standing in for unwritten ones).
+speculative stub nodes standing in for unwritten ones). A failed `reason`
+(exhausted repair rounds) raises `LLMSchemaError` rather than routing
+anywhere — LLD §16's "park" recovery is a caller-level concern (the
+process that invoked `graph.ainvoke(...)` catches it and parks the task),
+not a graph edge.
 
 CHECKPOINTER DEFERRED, stated up front, not hidden: LLD §4 calls for
 `AsyncCockroachDBSaver` on the memory cluster ("no side effect without a
@@ -41,8 +44,9 @@ from langgraph.graph.state import CompiledStateGraph
 from agent.memory.db import Database
 from agent.nodes.observe import ProbeResult
 from agent.nodes.observe import observe as observe_fn
+from agent.nodes.reason import reason as reason_fn
 from agent.nodes.recall import recall as recall_fn
-from agent.providers.base import EmbeddingProvider
+from agent.providers.base import EmbeddingProvider, LLMProvider
 from agent.state import AgentState
 
 
@@ -53,13 +57,16 @@ def _route_after_observe(state: AgentState) -> str:
     return "recall" if state.get("incident_fingerprint") else END
 
 
-def build_graph(db: Database, embed_provider: EmbeddingProvider) -> CompiledStateGraph:
+def build_graph(
+    db: Database, embed_provider: EmbeddingProvider, llm: LLMProvider
+) -> CompiledStateGraph:
     """Returns a compiled, invocable LangGraph app.
 
-    `db`/`embed_provider` are bound via closures over each node — LangGraph
-    nodes only ever receive `state`, so this is how the per-process
-    dependencies (a live connection pool, a live embedding provider) get
-    in without threading them through every `graph.invoke(...)` call.
+    `db`/`embed_provider`/`llm` are bound via closures over each node —
+    LangGraph nodes only ever receive `state`, so this is how the
+    per-process dependencies (a live connection pool, a live embedding
+    provider, a live LLM provider) get in without threading them through
+    every `graph.invoke(...)` call.
     """
 
     async def _observe(state: AgentState) -> dict[str, Any]:
@@ -78,11 +85,16 @@ def build_graph(db: Database, embed_provider: EmbeddingProvider) -> CompiledStat
     async def _recall(state: AgentState) -> dict[str, Any]:
         return await recall_fn(state, db, embed_provider)
 
+    async def _reason(state: AgentState) -> dict[str, Any]:
+        return await reason_fn(state, db, llm)
+
     graph = StateGraph(AgentState)
     graph.add_node("observe", _observe)
     graph.add_node("recall", _recall)
+    graph.add_node("reason", _reason)
     graph.set_entry_point("observe")
     graph.add_conditional_edges("observe", _route_after_observe, {"recall": "recall", END: END})
-    graph.add_edge("recall", END)  # reason(node) doesn't exist yet — see module docstring
+    graph.add_edge("recall", "reason")
+    graph.add_edge("reason", END)  # gate(node) doesn't exist yet — see module docstring
 
     return graph.compile()

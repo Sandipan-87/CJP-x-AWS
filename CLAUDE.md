@@ -106,50 +106,56 @@ written). 2026-08-11 = Day 11 of 17; 7 days for Phases 1–3.
    (4 migration files) for the first time this project.
 DONE  Phase 0 exit gate PASS · P1-P1 migrations 001-004 written, 001+002
       APPLIED live · S3 fully closed · full memory layer + both providers +
-      the first tool adapter (`sql_probe.py`) all WRITTEN AND VERIFIED
-      LIVE — detail + every bug found/fixed along the way is in the §7
-      changelog entries, not restated here every session.
-      **`agent/graph.py` WRITTEN AND VERIFIED LIVE, 2026-08-11 — THE FIRST
-      RUNNING AGENT LOOP, not a library of parts anymore.** First real use
-      of the `langgraph` package: compiles `observe → recall → END` with
-      observe's own conditional edge ("no anomaly → done"). Checkpointer
-      deliberately deferred (needs its own `AsyncCockroachDBSaver.setup()`
-      + migration-004 bootstrap, LLD §4 — a separate piece of work, not a
-      side effect of wiring two nodes); the graph compiles and runs without
-      one for now — real DB writes still happen for real regardless, since
-      the NODES write to CockroachDB directly, independent of whatever
-      LangGraph itself checkpoints. `scripts/smoke_test_graph.py`, 9/9,
-      first run, no bugs: a real scenario on the target cluster, probed for
-      real, invoked through the compiled graph TWICE — once routing
-      `observe → recall` (incident fires, `recall_bundle` populated) and
-      once routing straight to `END` after `observe` alone (no anomaly,
-      `recall_bundle` stays `None` — proving the branch is actually skipped,
-      not run-and-empty) — both branches proven live, both on real data.
-      **Product decision 2026-08-11:** `memory_items`' one-row-per-sweep is
-      intentional episode history — do not dedup it. 46 unit tests + 101
-      live checks total now pass.
-OPEN (non-gating)  No checkpointer wired — cross-run resume-from-checkpoint
-      isn't there yet (kill-and-resume today lives entirely in `agent/
-      memory/leases.py`, already proven; this is an additive layer, not a
-      prerequisite for that mechanism). `reason`/`gate`/`act_measure` don't
-      exist, so the graph ends at `recall`. Migrations 003/004 still
-      blocked on real prerequisites (seed corpus; `saver.setup()`), not a
-      gap. `ENGRAM_TARGET_PROBE_DSN` (dedicated read-only role) still not
-      provisioned — `SqlProbe` falls back to the admin DSN with a loud
-      warning. MCP/CloudWatch/ccloud collection legs of `observe(node)`
-      step 1 still unimplemented. 26257 is open right now only because of
-      the user's VPN — treat it as still blocked by default, not fixed.
+      `sql_probe.py` + the first running graph (`observe → recall`) all
+      WRITTEN AND VERIFIED LIVE — detail + every bug found/fixed along the
+      way is in the §7 changelog entries, not restated here every session.
+      **GRAPH EXTENDED TO `reason`, 2026-08-11 — real LLM reasoning now in
+      the loop, not just retrieval.** `agent/providers/ollama_cloud_llm.py`
+      (`OllamaCloudLLM`, the primary rung — LLD §7, wire shape exactly what
+      Session 7's `verify_ollama.py` already measured: native `/api/chat`,
+      `minimax-m3:cloud`) + `agent/schemas.py` (`Proposal`/`Evidence`/
+      `Citation`/`ActionKind`, pydantic — no longer speculative now that
+      `reason(node)` exists to check it against) + `agent/nodes/reason.py`
+      (LLD §5.3 steps 1/2/4/5; step 3's falsification loop reworked as a
+      DETERMINISTIC Python check against `SqlProbe`'s already-real
+      `index_candidate`, never asked of the model itself — the model
+      grading its own falsification evidence would defeat the point).
+      `agent/graph.py` now compiles `observe → recall → reason → END`.
+      **10/10 mocked unit tests** (`OllamaCloudLLM` retry/401/think-tag
+      paths) **+ 13/13 scripted control-flow tests** (`reason()`'s
+      retry-with-feedback loop, exhaustion → `LLMSchemaError`, the
+      no-recommendation-is-not-a-mismatch case) — all deterministic, no
+      real model needed for the control-flow proof. `scripts/smoke_test_
+      graph.py` extended, 12/12, first run, no bugs: the real Ollama Cloud
+      model, given the real optimizer recommendation in its prompt,
+      proposed a matching `create_index` on the first try — no repair
+      round even needed. **Product decision 2026-08-11:** `memory_items`'
+      one-row-per-sweep is intentional episode history — do not dedup it.
+      69 unit tests + 104 live checks total now pass.
+OPEN (non-gating)  No checkpointer wired — kill-and-resume already lives
+      entirely in `agent/memory/leases.py` (proven independently); this is
+      additive, not a prerequisite. `gate`/`act_measure` don't exist, so
+      the graph ends at `reason`. Migrations 003/004 still blocked on real
+      prerequisites, not a gap. `ENGRAM_TARGET_PROBE_DSN` still not
+      provisioned. MCP/CloudWatch/ccloud legs of `observe(node)` step 1
+      still unimplemented — `reason(node)`'s falsification check leans on
+      `SqlProbe`'s signal instead of a live `explain_query` MCP tool call,
+      a stated simplification, not a gap waiting to be noticed. 26257 is
+      open right now only because of the user's VPN — treat it as still
+      blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session.)
 ```
 
-**Next action, in order:** (1) `AsyncCockroachDBSaver` bootstrap (LLD §6.3: `saver.setup()` on the still-empty checkpoint tables, immediately followed by migration 004's TTL) — closes the "no checkpointer" gap and unblocks 004; (2) `agent/providers/ollama_cloud_llm.py` + `agent/nodes/reason.py` — the next real node, extending the graph past `recall`; (3) provision `ENGRAM_TARGET_PROBE_DSN` on the target cluster (manual); (4) migration 003 once a seed corpus exists.
+**Next action, in order:** (1) `agent/tools/recipe_renderer.py` (LLD §10, uses `ActionKind` — turns a validated `Proposal` into idempotent, allowlisted SQL, the piece `gate`/`act_measure` need to exist at all); (2) `agent/nodes/gate.py` (LLD §5.4 — ledger txn + approval poll, the next real node); (3) `AsyncCockroachDBSaver` bootstrap (closes the "no checkpointer" gap, unblocks migration 004); (4) provision `ENGRAM_TARGET_PROBE_DSN` on the target cluster (manual).
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 22 · Wrote + live-verified `ollama_cloud_llm.py` + `reason.py` — extended the graph to real LLM reasoning.** `agent/providers/base.py` gained `LLMProvider`/`LLMResult` (deferred since Session 16, no longer speculative now that something implements it). `agent/providers/ollama_cloud_llm.py`'s wire shape is not a fresh guess — it's exactly what `verify_ollama.py` already measured and gated PASS back in Session 7: native `/api/chat`, not the OpenAI-compatible shape; `<mm:think>` stripping kept as defense-in-depth per the Session 7 correction, not because a leak was re-observed. `agent/schemas.py` (new): `Proposal`/`Evidence`/`Citation`/`ActionKind`, pydantic, split from `agent/state.py`'s TypedDicts on purpose — real validation needs a different contract than a checkpoint-safe dict, and `ActionKind` is shared with the not-yet-written `recipe_renderer.py`. **`agent/nodes/reason.py` reworks LLD §5.3 step 3's falsification loop rather than implementing it as written**, stated explicitly: the LLD assumes a live `explain_query` MCP tool the model calls mid-conversation, which doesn't exist; instead, the model's proposed `(table, columns)` is checked in Python against `SqlProbe`'s already-real `index_candidate` (captured back in `observe(node)`) — never asked of the model itself, since a model grading its own falsification evidence defeats the point of it being an external check. Also merged two LLD bounds ("rounds < 3" for falsification, "1 repair turn" for schema failure) into one round counter, a stated simplification not a silent blend. **10/10 mocked `OllamaCloudLLM` unit tests** (retry/401/think-tag paths, same `httpx.MockTransport` pattern as `CohereEmbeddings`) **+ 13/13 scripted `reason()` control-flow tests** using a fake `LLMProvider`/`Database` — deterministic proof of the retry-with-feedback loop, exhaustion → `LLMSchemaError`, and the "no recommendation = inconclusive, not a mismatch" rule, none of which depend on real model behavior to verify. `agent/graph.py` now wires `recall → reason → END` (previously `recall → END`); `build_graph()` takes an `llm` argument. `scripts/smoke_test_graph.py` extended and re-run, 12/12, **first run, no bugs**: the real Ollama Cloud model, shown the real optimizer recommendation in its prompt, proposed a `create_index` matching it on the very first call — no repair round needed, though the code path for one is proven separately by the scripted tests. **69 unit tests + 104 live checks now pass in total.**
 
 **2026-08-11 — Session 21 · Wrote + live-verified `agent/graph.py` — the first running agent loop.** First real use of the `langgraph` package (v1.2.10, installed this session): `build_graph(db, embed_provider)` compiles `observe → recall → END` with observe's own conditional edge from LLD §4 ("no anomaly → done"). `db`/`embed_provider` are bound via closures over each node — LangGraph nodes only ever receive `state`, so a per-invocation `initial_probe: dict | None` field was added to `AgentState` (not in the LLD's §3 listing; a compiled graph has no other way to hand a sweep's raw `ProbeResult` into `observe(node)`'s wrapper). **Checkpointer deliberately deferred, stated not hidden:** LLD §4 wants `AsyncCockroachDBSaver` wired in ("no side effect without a checkpoint commit"), but that needs its own bootstrap (`saver.setup()` on the still-empty checkpoint tables, immediately followed by migration 004's TTL) — a real, separate piece of work, not a side effect of assembling two nodes. The graph compiles and runs without one for now; this does not weaken kill-and-resume, which already lives entirely in `agent/memory/leases.py` and was proven independently in Session 15 — LangGraph-level checkpointing is an additive layer on top of that, not a prerequisite for it. `tests/test_graph.py`: 3 unit tests for the one pure piece (`_route_after_observe`), no cluster needed. `scripts/smoke_test_graph.py`, 9/9, **first run, no bugs**: builds a real scenario on the target cluster, probes it for real, invokes the compiled graph twice — once where the incident fires (routes `observe → recall`, `recall_bundle` populated) and once where it doesn't (routes straight to `END`, `recall_bundle` stays `None` — proving the branch is genuinely skipped, not run-and-empty). Both branches proven live, on real data, exactly the loop the user asked to watch execute rather than compile dry against mocked payloads. **46 unit tests + 101 live checks now pass in total.**
 

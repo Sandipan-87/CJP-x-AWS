@@ -3,10 +3,11 @@
 
 The full loop the user asked for: a real scenario on the TARGET cluster,
 probed for real via SqlProbe, fed into `build_graph()`'s compiled app, and
-invoked for real — `observe -> recall -> END` on live ammunition, not a
-dry run with mocked payloads. Two invocations: one that fires an incident
-(routes through recall) and one that doesn't (routes straight to END after
-observe), proving the conditional edge actually branches both ways.
+invoked for real — `observe -> recall -> reason -> END` on live ammunition,
+not a dry run with mocked payloads. Two invocations: one that fires an
+incident (routes all the way through reason, real Ollama Cloud call
+included) and one that doesn't (routes straight to END after observe),
+proving the conditional edge actually branches both ways.
 
 Latency is deliberately bumped in the "incident" case (see inline note) —
 this test proves the GRAPH ROUTES correctly off whatever `is_anomaly()`
@@ -41,6 +42,7 @@ import psycopg
 from agent.graph import build_graph
 from agent.memory.db import Database
 from agent.providers.cohere_embed import CohereEmbeddings
+from agent.providers.ollama_cloud_llm import OllamaCloudLLM
 from agent.tools.sql_probe import SqlProbe
 
 RULE = "-" * 72
@@ -91,10 +93,10 @@ async def main(target_sslrootcert: str | None, memory_sslrootcert: str | None) -
             record("real EXPLAIN captured (full scan + index candidate)",
                    explain_result.has_full_scan and explain_result.index_candidate == "customer_id")
 
-        async with CohereEmbeddings() as embed_provider:
-            graph = build_graph(db, embed_provider)
+        async with CohereEmbeddings() as embed_provider, OllamaCloudLLM() as llm:
+            graph = build_graph(db, embed_provider, llm)
 
-            print(f"\n{RULE}\nINVOCATION 1 — anomalous probe, must route observe -> recall\n{RULE}")
+            print(f"\n{RULE}\nINVOCATION 1 — anomalous probe, must route observe -> recall -> reason\n{RULE}")
             # Latency bumped to simulate a genuinely slow production query on top of the
             # REAL full-scan/index-candidate signal SqlProbe measured — see module docstring.
             # ExplainResult is a NamedTuple, hence ._replace (its own built-in), not dataclasses.replace.
@@ -109,9 +111,16 @@ async def main(target_sslrootcert: str | None, memory_sslrootcert: str | None) -
             task_ids.append(final1["task_id"])
             normalized_texts.append(final1["observations"][0]["payload"]["text"])
             record("incident_fingerprint is set (anomaly fired)", final1["incident_fingerprint"] is not None)
-            record("phase progressed to 'recall' (graph did not stop at observe)",
-                   final1["phase"] == "recall", f"phase={final1['phase']!r}")
+            record("phase progressed to 'recall' then 'reason' (graph did not stop early)",
+                   final1["phase"] == "reason", f"phase={final1['phase']!r}")
             record("recall_bundle was populated", final1["recall_bundle"] is not None)
+            record("a real Proposal came back from Ollama Cloud", final1["proposal"] is not None)
+            if final1["proposal"]:
+                record("proposal has an allowlisted action_kind",
+                       final1["proposal"]["action_kind"] in ("create_index", "analyze_table"),
+                       final1["proposal"]["action_kind"])
+                record("proposal carries non-empty audit-grade reasoning",
+                       len(final1["proposal"]["reasoning"]) > 0)
 
             print(f"\n{RULE}\nINVOCATION 2 — non-anomalous probe, must route straight to END\n{RULE}")
             # Real, unmodified measurement (~tens of ms) -- genuinely below the production

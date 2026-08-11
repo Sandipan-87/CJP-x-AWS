@@ -80,15 +80,20 @@ jobs:
           --target-sslrootcert "$(pwd)/target-ca.crt"
           --memory-sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run the compiled graph smoke test (agent/graph.py, observe -> recall -> END, both branches)
+      - name: Run the compiled graph smoke test (agent/graph.py, observe -> recall -> reason -> END, both branches)
+        # Needs OLLAMA_API_KEY on top of the other secrets -- reason(node) makes a real
+        # Ollama Cloud call now that the graph extends past recall.
         env:
           ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
           ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
         run: >
           python scripts/smoke_test_graph.py
           --target-sslrootcert "$(pwd)/target-ca.crt"
           --memory-sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks + observe/sql_probe/graph helpers, no cluster/secrets needed)
-        run: pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py tests/test_sql_probe.py tests/test_graph.py -v
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings/Ollama mocks + observe/sql_probe/graph/reason helpers, no cluster/secrets needed)
+        run: >
+          pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py
+          tests/test_sql_probe.py tests/test_graph.py tests/test_ollama_cloud_llm.py tests/test_reason.py -v
