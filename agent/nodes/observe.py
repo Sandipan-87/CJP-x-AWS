@@ -2,12 +2,15 @@
 
 design/02-low-level-design.md §5.1. Steps 2–4 only, stated up front:
 
-  1. "Collect: MCP, probe SQL, CloudWatch, ccloud" is DELIBERATELY NOT
-     implemented here. None of those tool adapters exist yet
-     (`agent/tools/*.py`) — inventing their interfaces now, with nothing to
-     call, would be speculative (coding-conduct rule 2). `ProbeResult`
-     below is what a future collection step is expected to hand this
-     function; this node starts from an already-collected signal.
+  1. "Collect: MCP, probe SQL, CloudWatch, ccloud" — the "probe SQL" leg now
+     exists (`agent/tools/sql_probe.py`, `SqlProbe.explain_analyze`); MCP,
+     CloudWatch and ccloud still don't. `probe_result_from_explain()` below
+     is the bridge from `SqlProbe`'s `ExplainResult` to this module's
+     `ProbeResult` — real signal in, not a mock. The other three
+     collection sources remain deliberately unimplemented: inventing their
+     interfaces now, with nothing to call, would be speculative (coding-
+     conduct rule 2). `ProbeResult` stays generic so any of them can feed
+     it later without changing this module's other functions.
   2. Fingerprint: normalize the query text, sha256 it.
   3. Anomaly rule: deterministic, exactly the rule §5.1 names.
   4. One txn: `db.insert_incident_observation` (task + observation + entity,
@@ -29,6 +32,7 @@ from agent.memory.db import Database
 from agent.memory.embeddings import embed_and_cache
 from agent.providers.base import EmbeddingProvider
 from agent.state import AgentState, Observation
+from agent.tools.sql_probe import ExplainResult
 
 DEFAULT_LATENCY_THRESHOLD_MS = 1000.0  # §5.1 step 3's "threshold" — tunable, not measured yet
 
@@ -51,6 +55,25 @@ class ProbeResult(dict):
         table_name: str             the table the candidate index would live on
         target_cluster_id: str
     """
+
+
+def probe_result_from_explain(
+    result: ExplainResult, *, query_text: str, table_name: str, target_cluster_id: str
+) -> ProbeResult:
+    """Bridges `SqlProbe.explain_analyze()`'s real, measured output into
+    this module's `ProbeResult` shape. The only place that conversion
+    happens — kept here (not in `sql_probe.py`) so the dependency runs
+    node -> tool, never the reverse; `agent/tools/sql_probe.py` knows
+    nothing about `observe(node)` or `ProbeResult`.
+    """
+    return ProbeResult(
+        query_text=query_text,
+        probe_latency_ms=result.latency_ms,
+        plan_has_seq_scan=result.has_full_scan,
+        index_candidate=result.index_candidate,
+        table_name=table_name,
+        target_cluster_id=target_cluster_id,
+    )
 
 
 def normalize_query_text(sql: str) -> str:

@@ -23,10 +23,11 @@ jobs:
 
       - run: pip install -r requirements.txt -r scripts/requirements-verify.txt
 
-      - name: Fetch the memory cluster's CA cert
+      - name: Fetch both clusters' CA certs
         run: |
           set -e
           curl -fsSL "https://cockroachlabs.cloud/clusters/ee8bc725-9ea6-428a-afd7-7b49a879f3ed/cert" -o cluster-ca.crt
+          curl -fsSL "https://cockroachlabs.cloud/clusters/ff3851bb-3869-4772-ba64-fd3076b3917b/cert" -o target-ca.crt
           openssl x509 -in cluster-ca.crt -noout -subject -dates
 
       - name: Run the DAO smoke test
@@ -65,5 +66,19 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
         run: python scripts/smoke_test_observe_node.py --sslrootcert "$(pwd)/cluster-ca.crt"
 
-      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks + observe helpers, no cluster/secrets needed)
-        run: pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py -v
+      - name: Run the SqlProbe -> observe(node) integration smoke test (target cluster -> memory cluster)
+        # ENGRAM_TARGET_DSN is admin-level (used for scenario DDL setup/teardown only --
+        # SqlProbe itself only ever runs EXPLAIN). ENGRAM_TARGET_PROBE_DSN (a dedicated
+        # read-only role) has not been provisioned yet -- SqlProbe falls back to
+        # ENGRAM_TARGET_DSN with a loud warning; see sql_probe.py's module docstring.
+        env:
+          ENGRAM_MEMORY_DSN: ${{ secrets.ENGRAM_MEMORY_DSN }}
+          ENGRAM_TARGET_DSN: ${{ secrets.ENGRAM_TARGET_DSN }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+        run: >
+          python scripts/smoke_test_sql_probe.py
+          --target-sslrootcert "$(pwd)/target-ca.crt"
+          --memory-sslrootcert "$(pwd)/cluster-ca.crt"
+
+      - name: Run unit tests (T1 scoring + T3 CohereEmbeddings mocks + observe/sql_probe helpers, no cluster/secrets needed)
+        run: pytest tests/test_scoring.py tests/test_cohere_embed.py tests/test_observe.py tests/test_sql_probe.py -v

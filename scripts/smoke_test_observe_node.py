@@ -99,8 +99,8 @@ async def main(sslrootcert: str | None) -> int:
                 "SELECT item_id, embedding FROM memory_items WHERE scope_id = %s AND class = 'query_fingerprint'",
                 (scope_id,),
             )
-            record("2 memory_items rows written (one per sweep, not deduped at this layer)",
-                   len(item_rows) == 2, f"{len(item_rows)} row(s) — see note in CLAUDE.md")
+            record("2 memory_items rows written — one per sweep, by product decision (episode history)",
+                   len(item_rows) == 2, f"{len(item_rows)} row(s)")
 
         except Exception as exc:  # noqa: BLE001
             all_ok = False
