@@ -2,11 +2,23 @@
 
 [ILLUSIONIST]. `design/02-low-level-design.md` §11 (frozen contract) / HLD §5.6.
 
-**Scope of this chunk, stated explicitly:** this app implements the four read-only SSE feeds
-(§11.1: tasks, actions, inspector, approvals) and a UI to view them. It does **not** implement
-the mutation path (`POST /approvals/{id}`, §11.2) — that goes through API Gateway + Lambda in
-the real architecture specifically so no DB write credential ever needs to sit in a browser or
-serverless function. Approve/Reject buttons render, disabled, with a `title` explaining this.
+**Scope, updated:** the four read-only SSE feeds (§11.1) plus the mutation path (§11.2) are both
+now wired. `src/app/api/approvals/[approvalId]/route.ts` is the backend-for-frontend hop: it
+holds the real API Gateway key server-side only (`ENGRAM_APPROVALS_API_KEY`) and proxies the
+browser's request to `infra/`'s deployed endpoint. The browser itself never talks to API Gateway
+directly and never sees the key — same reasoning as `engram_reader` being the only DB credential
+this app ever holds. Approve/Reject in `ApprovalQueuePanel.tsx` call this route for real; if
+`ENGRAM_APPROVALS_API_URL`/`ENGRAM_APPROVALS_API_KEY` aren't set (nothing deployed yet), the
+route returns 503 and the button shows that as an inline error — not a special case, just what
+"the request failed" looks like.
+
+**Live-verified end-to-end without a real AWS deployment**, using
+`scripts/local_approvals_api_shim.py` (a local dev-only stand-in for API Gateway that runs the
+real `workers/approvals/handler.py` code): seeded a real pending approval, clicked the real
+Approve button in a real browser, watched a real `200` come back, and watched the Approval Queue
+AND Action Feed panels update to "approved" on their own via the SSE feed — no page reload. That
+run also caught a real bug (see `workers/approvals/handler.py`'s own comment): a non-UUID
+`approval_id` crashed the handler instead of returning 400; fixed and covered by a new test.
 
 ## Setup
 
@@ -25,6 +37,18 @@ serverless function. Approve/Reject buttons render, disabled, with a `title` exp
    Without this file, `src/lib/db.ts` falls back to `rejectUnauthorized: false` with a loud
    console warning — fine for a quick local check, never for anything real.
 4. `npm install && npm run dev` — http://localhost:3000.
+5. For the mutation path, set in `.env.local` (gitignored):
+   ```
+   ENGRAM_APPROVALS_API_URL=<infra/'s deployed API Gateway URL, once deployed>
+   ENGRAM_APPROVALS_API_KEY=<the real API Gateway key -- see infra/README.md>
+   ```
+   Or, for local testing without deploying anything to AWS,
+   `python scripts/local_approvals_api_shim.py` (repo root) runs the real Lambda handler code as
+   a local HTTP server and set:
+   ```
+   ENGRAM_APPROVALS_API_URL=http://localhost:8787
+   ENGRAM_APPROVALS_API_KEY=local-dev-key
+   ```
 
 ## Why `pg`, not `psycopg`/the Python DAO
 

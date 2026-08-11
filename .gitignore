@@ -20,6 +20,10 @@ node_modules/
 out/
 .vercel/
 
+# CDK (infra/) — synth output and the hand-assembled Lambda build dir (infra/build.py)
+cdk.out/
+infra/.build/
+
 .DS_Store
 Thumbs.db
 *.log

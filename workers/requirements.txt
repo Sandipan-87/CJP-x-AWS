@@ -1,0 +1,7 @@
+# Engram · Lambda deployment dependencies. Deliberately NOT requirements.txt at repo root --
+# these get bundled INTO the Lambda zip (infra/ CDK stack), so this list must stay minimal.
+#
+# boto3/botocore are NOT listed here on purpose: the AWS Lambda Python runtime provides them
+# pre-installed. Bundling them anyway would just bloat the deployment package for no benefit.
+pg8000>=1.31.0   # pure Python -- no native extension, no Docker-based bundling needed (see
+                 # workers/common/db.py's own docstring for why this isn't psycopg3)

@@ -300,36 +300,110 @@ DONE (Phase 3, chunk 4)  **Read-only dashboard/SSE surface CLOSED for its
       architecture notes, and both findings above for whoever picks this
       up next. **135 Python unit tests unchanged and still passing** --
       nothing in `agent/` touched this chunk.
-OPEN (Phase 3, non-gating)  `agent/nodes/act_measure.py`'s own smoke test
+DONE (Phase 3, chunk 5)  **API Gateway + Lambda for POST /approvals/{id}
+      (LLD §11.2) BUILT, unit-tested, and live-verified end-to-end --
+      actual `cdk deploy` deliberately NOT run, pending the user granting
+      broader IAM permissions (asked explicitly rather than assumed; see
+      below).** New `workers/` (`common/db.py` + `approvals/handler.py`)
+      and `infra/` (AWS CDK Python, HLD §6's locked IaC choice). A
+      fourth least-privilege SQL role, `engram_approver`
+      (`db/migrations/006_approver_role.sql`: SELECT+UPDATE on `approvals`
+      only) closes a real gap HLD's own secrets table glossed over --
+      `engram_reader` (SELECT-only) cannot perform the CAS UPDATE this
+      endpoint needs, so neither existing dashboard-adjacent role fit;
+      provisioned and live-verified by `scripts/bootstrap_approver_role.py`
+      (6/7 checks -- the one failure is itself informative, below).
+      **`workers/` uses `pg8000`, not `psycopg3`, on purpose:** no Docker
+      is available in this dev environment, and CDK's usual Python-Lambda
+      Docker bundling needs it for `psycopg[binary]`'s native extension;
+      `pg8000` is pure Python, so `infra/build.py` hand-assembles the
+      Lambda package with a plain `pip install --target` and needs no
+      cross-compilation step at all -- confirmed connecting to the real
+      cluster with it before writing anything that depended on it.
+      **`cdk synth` (fully local, no AWS credentials needed beyond a
+      placeholder account/region) succeeded first try**, generating a
+      correct template -- confirmed the Lambda's IAM policy is scoped to
+      exactly `secretsmanager:GetSecretValue`/`DescribeSecret` on the one
+      `engram/approver-dsn` secret ARN, never broader, matching the
+      project's S3-ARN-scoping discipline applied to a new service.
+      **Live-verified end-to-end WITHOUT any real AWS deployment**, using
+      a new local dev-only shim (`scripts/local_approvals_api_shim.py`)
+      that runs the real handler code behind a local HTTP server standing
+      in for API Gateway: `scripts/smoke_test_approvals_lambda.py` passed
+      6/6 against the real handler + real DB, and then -- the actual
+      closing proof -- a real browser click on the dashboard's real
+      Approve button, through the real Next.js proxy route
+      (`dashboard/src/app/api/approvals/[approvalId]/route.ts`, which
+      holds the API Gateway key server-side only, never sent to the
+      browser), produced a real `200`, a real DB row change, and the
+      Action Feed + Approval Queue panels updating to "approved" on their
+      own via the existing SSE feed -- no page reload, exactly LLD §11.3's
+      "SSE pushes the state change back to every viewer." **A real bug
+      caught by that same live test, not assumed away:** a non-UUID
+      `approval_id` reached the UPDATE statement and CockroachDB raised a
+      type-parse error there instead of returning 0 rows -- an unhandled
+      500-class crash for what should be an ordinary 400. Fixed with a
+      `uuid.UUID()` validation check before the query; added a regression
+      test (13/13 in `tests/test_workers_approvals.py`, up from 12).
+      **Asked the user explicitly before attempting `cdk deploy`** (real,
+      billable, hard-to-reverse AWS resource creation -- Lambda, API
+      Gateway, an IAM role) rather than assuming either way: they chose to
+      grant broader IAM permissions themselves first, so no deploy attempt
+      was made this session. Handed over the specific permission set
+      needed (CDK bootstrap is conventionally broad -- CloudFormation, S3,
+      ECR, IAM, SSM -- plus per-stack Lambda/API Gateway/IAM role creation
+      and Secrets Manager access), recommended as a NEW identity separate
+      from `engram-phase0` (which should stay S3-only, per its established
+      scope). **The Secrets Manager write step in
+      `bootstrap_approver_role.py` failed exactly as the IAM-scoping
+      pattern predicts** -- `engram-phase0` correctly lacks
+      `secretsmanager:PutSecretValue`/`CreateSecret`, the same
+      least-privilege-working-as-intended shape as the S3 bucket and
+      `CCLOUD_TOKEN` gaps before it; the SQL role itself is still fully
+      provisioned and verified, only the Secrets Manager write is
+      pending. **147 Python unit tests pass in total** (up from 135).
+OPEN (Phase 3, non-gating)  **Actual `cdk deploy` not run** -- pending the
+      user granting broader IAM permissions (their explicit choice this
+      session); once granted, `cdk bootstrap` then `cdk deploy` from
+      `infra/`, then wire the real endpoint/key into
+      `dashboard/.env.local`, replacing the local shim. The
+      `engram/approver-dsn` Secrets Manager secret also isn't created yet
+      for the same IAM reason -- `ENGRAM_APPROVER_DSN` in the local `.env`
+      is real and works for local testing (the shim reads it directly),
+      but the real deployed Lambda will need the Secrets Manager path once
+      permissions allow it. `agent/nodes/act_measure.py`'s own smoke test
       still uses `override_backup_gate=True` rather than the now-real
       network path -- wiring a live `CloudApiAdapter` through an actual
       `act_measure` run is real follow-up, not done yet. `CCLOUD_TOKEN`
       hasn't been added as a GitHub Actions repo secret yet (local `.env`
       only). §8.4 crash-window reconciliation (W1-W4) not implemented. The
-      dashboard's mutation path (API Gateway + Lambda approvals/metrics/
-      webhooks, LLD §11.2) and CDK infra are NOT built -- read-only SSE
-      surface only, this chunk. Memory Inspector's similarity/citations
-      gap (above) not closed. Migration 003 still blocked on a real
-      prerequisite (seed corpus must exist first, invariant #1) -- not a
-      gap. `thread_id`/`task_id` reconciliation (`tasks.checkpoint_thread_id`)
+      dashboard's `metrics`/`webhooks` Lambda endpoints (LLD §11.2) and
+      the lifecycle-worker Lambdas (`consolidator`/`decayer`/
+      `embedding_backfill`, LLD §9) are NOT built -- only `approvals` this
+      chunk. Memory Inspector's similarity/citations gap (prior chunk) not
+      closed. Migration 003 still blocked on a real prerequisite (seed
+      corpus must exist first, invariant #1) -- not a gap.
+      `thread_id`/`task_id` reconciliation (`tasks.checkpoint_thread_id`)
       not wired -- nothing mints or persists a `thread_id` yet, since
       `main.py` (the SQS consumer that would own that) doesn't exist.
       MCP/CloudWatch/ccloud legs of `observe(node)` step 1 still
       unimplemented. 26257 is open right now only because of the user's
       VPN -- treat it as still blocked by default, not fixed.
-BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
-      unchanged, so don't assume it stays open next session. No remaining
-      credential gaps block Phase 3 work -- all four named ones across the
-      last four chunks are now provisioned.)
+BLOCKING  One manual step (broader IAM permissions for CDK deploy, handed
+      to the user this session -- see above) and time. (26257 currently
+      open via VPN; the underlying squid block is unchanged, so don't
+      assume it stays open next session.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) API Gateway + Lambda (approvals/metrics-proxy/webhooks, LLD §11.2) -- the natural next dashboard piece, unblocks real Approve/Reject; (2) lifecycle workers (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) on Lambda; (3) `main.py` (SQS consumer/entrypoint) -- mints a `thread_id`, reconciles it into `tasks.checkpoint_thread_id` (Phase 3 chunk 1's gap), and is also where a real (non-override) backup-gate call first gets exercised end to end; (4) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists.
+**Next action, in order (Phase 3 continues):** (1) once the user grants broader IAM permissions, `cdk bootstrap` + `cdk deploy` from `infra/`, verify the real endpoint, wire it into `dashboard/.env.local`; (2) create the `engram/approver-dsn` Secrets Manager secret (same IAM grant likely covers this); (3) `metrics`/`webhooks` Lambda endpoints (LLD §11.2) and lifecycle-worker Lambdas (LLD §9); (4) `main.py` (SQS consumer/entrypoint) -- mints a `thread_id`, reconciles it into `tasks.checkpoint_thread_id` (Phase 3 chunk 1's gap), and is also where a real (non-override) backup-gate call first gets exercised end to end; (5) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (6) the `gate→reason` re-plan edge, once a loop-prevention design exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 31 · Committed all pending Phase 3 work; built + unit-tested + live-verified the approvals API Gateway + Lambda end to end without any real AWS deployment; asked before attempting one.** Committed everything from Sessions 27–30 (checkpointer, target/reader roles, CCLOUD_TOKEN, dashboard) in one commit (`95ce614`) before starting new work, per explicit request. Then built the dashboard's mutation path (LLD §11.2, `POST /approvals/{id}`): new `workers/common/db.py` + `workers/approvals/handler.py`, new `infra/` (AWS CDK Python, HLD §6's locked IaC choice). **A fourth least-privilege SQL role was a real, previously-unnoticed gap**: neither `engram_agent` (too broad) nor `engram_reader` (SELECT-only) can perform the CAS UPDATE this endpoint needs — HLD's own secrets table loosely groups "memory-reader-dsn" under "(dashboard Lambda)" but that's imprecise for a write path. New migration `006_approver_role.sql` + `scripts/bootstrap_approver_role.py` (same live-verification pattern as every prior role this project has provisioned) closed it — 6/7 checks, the one failure being `secretsmanager:PutSecretValue` correctly denied for `engram-phase0`, the exact same least-privilege-working-as-intended shape as the S3 bucket and `CCLOUD_TOKEN` gaps before it. **A real environment constraint shaped a real design decision, not silently worked around:** no Docker is available in this dev environment, which CDK's usual Python-Lambda bundling needs for `psycopg[binary]`'s native extension — switched `workers/` to `pg8000` (pure Python, no native extension) specifically so `infra/build.py` could hand-assemble the Lambda package with a plain `pip install --target`, no cross-compilation step at all; confirmed connecting to the real cluster with it before writing anything that depended on it. `cdk synth` (fully local, no real AWS credentials needed) succeeded on the first real run, and inspecting the generated template confirmed the Lambda's IAM policy is scoped to exactly `secretsmanager:GetSecretValue`/`DescribeSecret` on the one `engram/approver-dsn` secret ARN — the project's S3-ARN-scoping discipline carried into a new AWS service, not just SQL grants. **Live-verified end to end WITHOUT deploying anything to real AWS**, using a new local-only shim (`scripts/local_approvals_api_shim.py`) that runs the REAL handler code behind a local HTTP server standing in for API Gateway: `scripts/smoke_test_approvals_lambda.py` passed 6/6 against the real handler and the real DB (200/409/404/204/400 all correct), and then — the actual closing proof, not just an API-level check — a real click on the dashboard's real Approve button, through the real Next.js proxy route (`dashboard/src/app/api/approvals/[approvalId]/route.ts`, holding the API Gateway key server-side only, exactly mirroring how `engram_reader` is the only DB credential the SSE routes hold), produced a real `200`, a real DB write, and the Action Feed + Approval Queue panels updating to "approved" on their own via the existing SSE feed — no page reload, exactly LLD §11.3's own demo narrative. **That live click immediately caught a real bug, not assumed away:** an earlier manual test with a non-UUID `approval_id` (`"does-not-exist"` as a literal string, not a syntactically valid-but-nonexistent UUID) reached the UPDATE statement and CockroachDB raised a type-parse error there instead of the query cleanly matching 0 rows — an unhandled crash for what should have been an ordinary 400. Fixed with a `uuid.UUID()` validation check before the query ever runs; added a regression test and fixed several existing mocked tests that had been using non-UUID placeholder IDs like `"aid-1"` (would have started failing against the new validation) — `tests/test_workers_approvals.py` now 13/13. **Asked the user explicitly before attempting `cdk deploy`**, rather than either assuming permission or assuming refusal: real, billable AWS resource creation (Lambda, API Gateway, an IAM role) under credentials already known this session to be deliberately narrow is exactly the kind of hard-to-reverse, security-relevant action that warrants asking first. User chose to grant broader IAM permissions themselves before any deploy attempt — handed over the specific permission set needed (CDK bootstrap is conventionally broad: CloudFormation, S3, ECR, IAM, SSM; plus per-stack Lambda/API Gateway/IAM-role/Secrets-Manager access), recommended as a NEW identity kept separate from `engram-phase0`. **147 Python unit tests pass in total** (up from 135) — `tests/test_workers_approvals.py` is new (13 tests), nothing else changed under `agent/`. `infra/.build/` and `cdk.out/` added to `.gitignore` (generated artifacts, not source).
 
 **2026-08-11 — Session 30 · Built + live-verified the read-only dashboard/SSE surface (`dashboard/`); found and closed two more real provisioning gaps (`ENGRAM_READER_DSN`, `approvals` grant); caught a real client dedup bug via live seeding.** Scaffolded a new Next.js App Router project (TypeScript, Tailwind, shadcn/ui — HLD §5.6's locked stack) implementing all four LLD §11.1 SSE feeds (tasks/actions/inspector/approvals), each a server-side cursor poll (5s, LIMIT 25, maxDuration=60, 12 iterations) against `engram_reader`. **Before writing any dashboard code, checked whether this Next.js version (16.3.0, installed by create-next-app) still matches training-data assumptions** — the scaffold's own generated AGENTS.md warns it might not — and read the actual route-handler and streaming docs shipped in `node_modules/next/dist/docs/` before writing the SSE routes; confirmed the Web-standard `ReadableStream`+Response pattern and `export const maxDuration` convention are unchanged. **`ENGRAM_READER_DSN` was a real, previously-unnoticed provisioning gap, same shape as last session's target probe/operator roles**: `db/migrations/002_grants.sql` created the `engram_reader` ROLE back in Phase 1 but never gave it a LOGIN password, so it had never actually been connectable. Wrote `scripts/bootstrap_reader_role.py` (mirrors `bootstrap_target_roles.py`'s pattern exactly) — set a real password, wrote the DSN to `.env`, then live-verified the actual privilege boundary rather than just that the role exists: 8/8 checks, first run — SELECT succeeds on the three frozen dashboard views plus `observations`, SELECT correctly FAILS on base tables the views join (`remediation_actions`, `decisions`), INSERT correctly FAILS everywhere. **A second real gap surfaced while wiring the approvals panel specifically:** LLD §11.1's own frozen SSE table names an `approvals` feed reading the base TABLE directly ("poll status change"), but migration 002 never granted `engram_reader` SELECT on it — only `v_action_feed`'s partial LEFT JOIN columns (`approval_status`, `decided_by`) were reachable. Wrote a new migration, `005_reader_approvals_grant.sql` (a separate file rather than editing the already-applied, frozen 002 — consistent with how this project has always layered corrections onto frozen migrations), applied it live, and re-verified. **Live-verified in an actual browser, not just curled:** ran `npm run build` clean; confirmed all four SSE routes are correctly marked dynamic/server-rendered, not statically cached; loaded the dashboard in Chrome via claude-in-chrome, confirmed all four panels connect (green status dot, real 200s in the network tab) and correctly render empty state against the real, currently-dataless cluster; then seeded a real, temporary demo task+action+memory_item+approval row directly via SQL and watched it stream through all four panels live, before cleaning it up completely (confirmed 0 rows remaining by direct query afterward). **That live seed immediately caught a real client-side bug, not assumed away:** the Task Feed panel rendered the single seeded row TWICE — every SSE reconnect re-polls the server from `cursor=null`, which legitimately re-sends the same recent backlog, and the original `useSse` hook had no de-duplication at all. Fixed by moving de-dup into the hook itself, keyed on a caller-supplied stable ID extractor (`task_id`/`action_id`/`item_id`/`approval_id`, one per panel, each a module-level function so the effect doesn't re-run every render) — applied uniformly across all four panels, including `ApprovalQueuePanel`, which had its own ad hoc version of the same idea beforehand. Confirmed fixed by reloading and re-checking the render. **A separate, dev-only false alarm chased down to a confirmed non-issue rather than left ambiguous:** React StrictMode's double-invoked effects (on by default in `next dev`) briefly open more than one `EventSource` per feed, occasionally logging a "two children with the same key" console warning during the overlap. Rather than assume this was benign, ran `npm run build && npm run start` on a second port and compared: network request counts showed exactly one connection per feed (not several), and the rendered output was correct — confirmed this genuinely does not reproduce in production, not just guessed. **Deliberately out of scope for this chunk, stated up front and in the code, not discovered as an afterthought:** the mutation path (`POST /approvals/{id}`, LLD §11.2) needs API Gateway + Lambda in the real architecture specifically so a write-capable DB credential never has to sit in a browser or serverless function — Approve/Reject buttons render, disabled, with a `title` explaining why, rather than faking a write path `engram_reader` structurally cannot perform. The `inspector` feed's frozen event schema (`{…, confidence, provenance}`) also doesn't carry per-recall `similarity`/citations (those live in `decisions.citations`, which `engram_reader` has no grant on) — LLD §11.3's demo narrative wants richer detail than this frozen feed alone delivers; recorded as follow-up in the panel's own comment, not silently under-delivered. `dashboard/README.md` documents setup, the architecture notes above, and both the dedup bug and the StrictMode finding for whoever picks this up next. **135 Python unit tests unchanged and still passing** — nothing under `agent/` was touched this session.
 
