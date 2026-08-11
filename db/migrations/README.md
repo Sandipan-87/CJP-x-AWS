@@ -18,6 +18,15 @@ fails outright (001/002) or violates invariant #1 / invariant #7.
    write — confirmed possible, `scripts/verify_cohere.py` gate PASS).
 6. `003_vector_index.sql` — only after step 5. Invariant #1: `IMPORT INTO` is
    unsupported on a table with a live vector index.
+7. `004_checkpoint_ttl.sql` — LangGraph checkpoint TTL, immediately after
+   `AsyncCockroachDBSaver.setup()` on the empty checkpoint tables (step 4,
+   above — listed again here since it's a real file, not just a runbook step).
+8. `005_reader_approvals_grant.sql` — order-independent w.r.t. 003/004 (just
+   a grant on an already-existing table), but numbered after them since it
+   was written later: `engram_reader` gains `SELECT` on `approvals` — LLD
+   §11.1's own frozen SSE contract names an `approvals` feed reading the base
+   table directly, which migration 002 never granted. Caught live while
+   building `dashboard/`'s SSE routes (2026-08-11).
 
 ## Running these
 

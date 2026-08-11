@@ -12,21 +12,24 @@ WHAT'S ACTUALLY MEASURED vs ASSUMED, stated plainly:
     `200 {"backups": [], "pagination": null}`. Case (a) — empty list, refuse
     — is exactly what this file's own tests exercise against that real
     capture, not an invented fixture.
-  - Case (b)/(c) — a NON-empty response with a completion timestamp inside
-    or outside the recency window — is ASSUMED, not measured. No non-empty
-    response has ever been captured against this account/tier (Basic
-    clusters here have no backups to show). The field name this module
-    looks for (`completedTime`, with a couple of plausible fallbacks) is a
-    best guess at the Cloud API's actual shape, not a confirmed one.
+  - **CORRECTED 2026-08-11 (Session 29, `scripts/verify_ccloud.py` gate
+    PASS): case (b)/(c) is now measured, not assumed, and the original
+    guess was WRONG.** A real `CCLOUD_TOKEN` against the real target
+    cluster returned a genuinely non-empty response —
+    `fixtures/cloudapi-backups-target-nonempty.json` — and the completion
+    timestamp field is **`as_of_time`**, not `completedTime`/
+    `completed_at`/`finishedTime` (the prior best-guess names, kept below
+    as fallbacks now that they're known-wrong for this API version rather
+    than removed outright, in case a different endpoint/version ever uses
+    one of them). Each entry is `{"id": <uuid>, "as_of_time": <ISO8601>}`
+    — no other fields observed.
   - The LIVE network call itself (`CloudApiAdapter.check_backup_gate`) is
-    UNVERIFIED as of this module's authoring: `CCLOUD_TOKEN` (a
-    Cluster-Admin-scoped key, LLD §2) does not exist in `.env`. Only the
-    mocked-transport path (`tests/test_cloud_api.py`, using the real
-    fixture as the canned response) has actually run.
-
-`decide_backup_gate()` is pure and fully testable regardless of the above —
-the ambiguity is entirely in what a real non-empty response looks like, not
-in the decision logic once a shape is assumed.
+    now VERIFIED: `scripts/verify_ccloud.py` confirmed auth (200, not
+    401), correct scope (200 on target, a real 403 on memory — the
+    opposite of the wrong-scope mistake this file's history already
+    records), and the real response shape above. `tests/test_cloud_api.py`
+    still also runs the mocked-transport path against both the empty and
+    the new non-empty fixture.
 """
 
 from __future__ import annotations
@@ -53,7 +56,12 @@ def decide_backup_gate(
     now = now or datetime.now(timezone.utc)
     most_recent: datetime | None = None
     for entry in backups:
-        raw = entry.get("completedTime") or entry.get("completed_at") or entry.get("finishedTime")
+        raw = (
+            entry.get("as_of_time")  # confirmed real field, scripts/verify_ccloud.py 2026-08-11
+            or entry.get("completedTime")
+            or entry.get("completed_at")
+            or entry.get("finishedTime")
+        )
         if not raw:
             continue
         try:

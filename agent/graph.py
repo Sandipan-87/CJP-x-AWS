@@ -24,25 +24,41 @@ LLD §16's "park" recovery is a caller-level concern (the process that
 invoked `graph.ainvoke(...)` catches the exception and parks the task),
 not a graph edge.
 
-CHECKPOINTER DEFERRED, stated up front, not hidden: LLD §4 calls for
-`AsyncCockroachDBSaver` on the memory cluster ("no side effect without a
-checkpoint commit"). Wiring it needs its own bootstrap sequence
-(`saver.setup()` on an EMPTY cluster, immediately followed by migration
-004's TTL — `db/migrations/README.md`) — a real, separate piece of work,
-not a side effect of assembling nodes. This graph compiles and runs
-WITHOUT a persistent checkpointer for now (`compile()`'s default). Real DB
-writes still happen for real: every node writes to CockroachDB directly,
-independent of whatever LangGraph itself is or isn't checkpointing — only
-cross-*run* resume-from-checkpoint isn't wired yet. Kill-and-resume today
-lives entirely in `agent/memory/leases.py`, proven in `scripts/smoke_test_
-leases.py`; LangGraph-level checkpointing is a second, additive layer, not
-a prerequisite for the mechanism that already exists.
+CHECKPOINTER now wired (Phase 3, `scripts/bootstrap_checkpointer.py` closed
+the bootstrap gap this deferred): `build_graph()` takes an optional
+`checkpointer: BaseCheckpointSaver | None`. Passing `None` (the default)
+compiles exactly as before — this is additive, not a breaking change for
+any existing caller. When a real `AsyncCockroachDBSaver` is passed,
+`graph.ainvoke(state, config={"configurable": {"thread_id": ...}})` MUST
+supply a `thread_id` in `config` — LangGraph raises without one once a
+checkpointer is set.
+
+**Deliberately NOT closed by this chunk, stated not hidden:** LLD §3 says
+"`thread_id = task_id`," but `tasks` (migration 001) already has a
+*separate* `checkpoint_thread_id STRING` column — meaning the schema itself
+already anticipated these being two different values, not one. That makes
+sense given the actual data flow: a LangGraph `thread_id` must be chosen
+BEFORE `graph.ainvoke()` is ever called (it lives in `config`, supplied by
+the caller), but the real DB `task_id` doesn't exist until `observe(node)`
+dedupes an incident and inserts (or reuses) a `tasks` row — *after* the
+graph is already running. So whatever mints a `thread_id` today (not yet
+written — that's `main.py`'s job, still unbuilt) has no way to know the
+`task_id` in advance, and nothing in this codebase yet writes a chosen
+`thread_id` back into `tasks.checkpoint_thread_id` for reconciliation. That
+write is real follow-up work, not assumed away by wiring the checkpointer.
+
+Real DB writes still happen independent of whatever LangGraph itself is or
+isn't checkpointing — every node writes to CockroachDB directly regardless.
+Kill-and-resume already lives entirely in `agent/memory/leases.py`, proven
+in `scripts/smoke_test_leases.py`; LangGraph-level checkpointing is a
+second, additive layer on top of that, not a replacement for it.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -83,6 +99,7 @@ def build_graph(
     sql_probe: SqlProbe,
     sql_operator: SqlOperator,
     *,
+    checkpointer: BaseCheckpointSaver | None = None,
     backup_gate: CloudApiAdapter | None = None,
     override_backup_gate: bool = False,
     gate_poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
@@ -97,6 +114,13 @@ def build_graph(
     threading them through every `graph.ainvoke(...)` call. `sql_probe` is
     shared between `gate` (optional schema cross-check) and `act_measure`
     (before/after `EXPLAIN ANALYZE`) — one connection, reused across both.
+
+    `checkpointer`, if given (typically a live `AsyncCockroachDBSaver` —
+    see `scripts/bootstrap_checkpointer.py` for the one-time setup its
+    tables need first), makes every node return a real checkpoint commit
+    (LLD §4). Every `graph.ainvoke(...)` call then MUST pass
+    `config={"configurable": {"thread_id": ...}}` — see module docstring
+    for the still-open `thread_id`/`task_id` reconciliation gap.
     """
 
     async def _observe(state: AgentState) -> dict[str, Any]:
@@ -144,4 +168,4 @@ def build_graph(
     graph.add_conditional_edges("gate", _route_after_gate, {"act_measure": "act_measure", END: END})
     graph.add_edge("act_measure", END)  # gate→reason re-plan edge NOT wired — see module docstring
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

@@ -141,28 +141,203 @@ DONE  Phase 0 + Phase 1 exit gates PASS (full memory layer + both
       for `reason(node)`'s real ~9s Ollama round-trip happening BEFORE
       `gate` ever creates anything to approve — widened the window;
       re-ran clean. 131 unit tests + 144 live checks total now pass.
-OPEN (Phase 3, non-gating for Phase 2)  No checkpointer wired — kill-and-
-      resume already lives entirely in `agent/memory/leases.py` (proven
-      independently), additive not a prerequisite. No `CCLOUD_TOKEN` — the
-      backup gate's live network leg is unverified (§8 row 8). §8.4
-      crash-window reconciliation (W1-W4) not implemented. No dashboard/
-      SSE surface (ILLUSIONIST's Phase 3). Migrations 003/004 still
-      blocked on real prerequisites, not a gap. `ENGRAM_TARGET_PROBE_DSN`/
-      `ENGRAM_TARGET_OPERATOR_DSN` still not provisioned. MCP/CloudWatch/
-      ccloud legs of `observe(node)` step 1 still unimplemented. 26257 is
-      open right now only because of the user's VPN — treat it as still
-      blocked by default, not fixed.
+DONE (Phase 3, chunk 1)  **Checkpointer bootstrap CLOSED, 2026-08-11 —
+      `scripts/bootstrap_checkpointer.py` ran live against the memory
+      cluster (VPN up, confirmed reachable this session): `AsyncCockroachDBSaver
+      .setup()` created the three checkpoint tables on the empty cluster,
+      migration 004 applied its TTL immediately after in the same process
+      (no gap between the two steps), verified via `SHOW CREATE TABLE`
+      that `ttl_expiration_expression` actually landed and all three tables
+      are still empty. `agent/graph.py`'s `build_graph()` now takes an
+      optional `checkpointer` param wired straight into `graph.compile()`
+      — additive, `None` (the default) behaves exactly as before, proven
+      by a regression check in the same smoke test.** A real bug was
+      caught and fixed BEFORE it shipped broken, not after: migration
+      004 and the LLD's own §6.2 comment both guessed `langgraph_`-prefixed
+      table names and a hand-rolled `ttl_expire_after` ALTER — reading the
+      actual installed `langchain-cockroachdb==0.3.0` source
+      (`checkpointer/base.py`) showed both were wrong. The real tables are
+      unprefixed (`checkpoints`/`checkpoint_blobs`/`checkpoint_writes`),
+      and the library ships its own `aenable_ttl()` using
+      `ttl_expiration_expression` against a `created_at` column it adds
+      itself — specifically to avoid the full-rewrite invariant #7 warns
+      about, which `ttl_expire_after` would have triggered. Migration 004
+      and the LLD comment are both corrected to match reality, not the
+      original guess. **A second real gap surfaced while wiring, stated
+      not silently closed over:** LLD §3 says "`thread_id = task_id`," but
+      `tasks` (migration 001) already has a separate `checkpoint_thread_id`
+      column — the schema itself anticipated these differ, since a
+      LangGraph `thread_id` must be chosen before `graph.ainvoke()` is
+      ever called, while the real DB `task_id` isn't minted until
+      `observe(node)` dedupes an incident, after the graph is already
+      running. Nothing yet reconciles a chosen `thread_id` back into
+      `tasks.checkpoint_thread_id` — real follow-up work, not done here.
+      `scripts/smoke_test_checkpointer.py`, **7/7, first run, no bugs**:
+      a real (cheap, no-anomaly) probe run through the compiled graph
+      with a real checkpointer and an explicit `thread_id`, a real row
+      confirmed in `checkpoints` via direct query AND via
+      `saver.aget_tuple()`, and a same-session regression proof that an
+      uncheckpointed `build_graph()` call is unaffected. **131 unit tests
+      still pass unchanged** (signature change is additive-only).
+DONE (Phase 3, chunk 2)  **`ENGRAM_TARGET_PROBE_DSN`/`ENGRAM_TARGET_OPERATOR_DSN` CLOSED,
+      2026-08-11 — provisioned live, not just decided.** New migration
+      lineage `db/target/001_target_roles.sql` (separate from
+      `db/migrations/`, which is memory-cluster-only — CLAUDE.md §2's
+      "two clusters, two roles" now has its own migration split to match)
+      creates `engram_probe`/`engram_operator` with no passwords in the
+      committed file. `scripts/bootstrap_target_roles.py` ran live against
+      the real target cluster: generated random passwords, set them via
+      `ALTER ROLE ... WITH LOGIN PASSWORD` (through `psycopg.sql.Literal`,
+      never string-interpolated), wrote both DSNs straight into `.env`,
+      and then **live-verified the actual privilege boundary, not just
+      that the roles exist** — 7/7 checks, first run, no bugs:
+      `engram_probe` can `SELECT` but a real `CREATE INDEX` attempt
+      correctly raises `InsufficientPrivilege`; `engram_operator` can
+      `CREATE INDEX`/`ANALYZE` but a real `DROP TABLE` and a real `GRANT`
+      both correctly fail the same way. Confirmed separately that
+      `SqlProbe`/`SqlOperator` now resolve these dedicated DSNs
+      automatically with no code change — both already preferred
+      `ENGRAM_TARGET_PROBE_DSN`/`ENGRAM_TARGET_OPERATOR_DSN` over the
+      admin fallback, per their own Session 20/23 docstrings; their loud
+      fallback warning no longer fires. Also reorganized `.env` (the two
+      new DSNs were initially appended at end-of-file by the bootstrap
+      script; moved into the existing TARGET-cluster section for
+      consistency, values never re-printed while doing so) and mirrored
+      the new keys into `.env.example` with placeholder values only.
+      **Wrote `scripts/verify_ccloud.py`** (same defensive-gate convention
+      as `verify_cohere.py`/`verify_s3.py`): probes the TARGET cluster's
+      backups endpoint with `CCLOUD_TOKEN`, cross-checks the MEMORY
+      cluster too so a repeat of the exact wrong-scope mistake the LLD
+      already records (line ~190: an earlier key 403'd on target, 200'd
+      on memory) would be caught immediately instead of mid-demo, and
+      runs the real response through the same `decide_backup_gate()` the
+      agent itself uses. Ran it against the current (empty) `.env` — self-
+      test only, correctly reports "not set" and exits 1, since no real
+      `CCLOUD_TOKEN` exists yet. **131 unit tests still pass unchanged.**
+DONE (Phase 3, chunk 3)  **`CCLOUD_TOKEN` CLOSED, 2026-08-11 — provisioned
+      and live-verified, all three named credential gaps from the last two
+      chunks now resolved.** User provisioned a Service Account key via
+      the CockroachDB Cloud console. **First attempt genuinely failed, not
+      a rehearsed success:** `scripts/verify_ccloud.py` returned `401
+      "invalid secret provided in authorization header"` on both
+      clusters — diagnosed (structural check: 36 chars, UUID shape, zero
+      dots) as the Client ID pasted where the Client Secret/API key
+      belonged, an easy console mistake since the console shows both
+      together at creation. Corrected, re-ran: **3/3 PASS, first real
+      run** — `200` on target, a genuine `403 unauthorized` on memory
+      (confirming correct scope, the exact opposite of the 2026-08-03
+      wrong-scope mistake this project already has on record), real
+      non-empty backup data. **This first-ever non-empty response
+      surfaced a second real bug, fixed same session:** the completion-
+      timestamp field is actually `as_of_time`, not the `completedTime`/
+      `completed_at`/`finishedTime` `decide_backup_gate()` had guessed
+      pre-measurement — corrected in `agent/tools/cloud_api.py`, captured
+      as new real evidence `fixtures/cloudapi-backups-target-nonempty
+      .json`, 4 new tests added against it (`tests/test_cloud_api.py`,
+      16/16 total). **135 unit tests now pass in total.** Full detail:
+      `docs/blocked-register.md` §8 (now marked RESOLVED).
+DONE (Phase 3, chunk 4)  **Read-only dashboard/SSE surface CLOSED for its
+      stated scope, 2026-08-11 — `dashboard/` now exists, live-verified
+      against the real memory cluster, not just scaffolded.** New Next.js
+      App Router project (TypeScript, Tailwind, shadcn/ui — matches HLD
+      §5.6's locked stack) implementing all four LLD §11.1 SSE feeds
+      (`tasks`/`actions`/`inspector`/`approvals`), each a server-side
+      cursor poll (5s interval, LIMIT 25, `maxDuration=60`, 12 iterations)
+      against `engram_reader` -- the ONLY DB credential anywhere in this
+      app, matching HLD §5.6's "no DB credentials in the frontend"
+      verbatim. **`ENGRAM_READER_DSN` itself was a second real
+      provisioning gap closed this session**, same shape as the target
+      probe/operator roles: `db/migrations/002_grants.sql` had already
+      created the `engram_reader` ROLE but never gave it a LOGIN password,
+      so it had never actually been connectable.
+      `scripts/bootstrap_reader_role.py` (mirrors `bootstrap_target_roles
+      .py`'s pattern) set a real password, wrote `ENGRAM_READER_DSN` to
+      `.env`, and live-verified the privilege boundary -- 8/8 checks, first
+      run: SELECT succeeds on the three frozen views + `observations`;
+      SELECT correctly FAILS on base tables the views join
+      (`remediation_actions`, `decisions`); INSERT correctly FAILS
+      everywhere. **A third real gap surfaced and closed while wiring the
+      `approvals` panel:** LLD §11.1's own frozen table names an
+      `approvals` feed reading the base TABLE directly ("poll status
+      change"), but migration 002 never granted `engram_reader` SELECT on
+      it -- only `v_action_feed`'s partial LEFT JOIN columns. New migration
+      `db/migrations/005_reader_approvals_grant.sql` (separate file, since
+      002 is already applied/frozen) closes this, applied live and
+      re-verified. **Live-verified in the browser, not just curled:**
+      `npm run build` succeeds cleanly; all four SSE routes correctly
+      marked dynamic/server-rendered; loaded in Chrome, confirmed all four
+      panels connect (green status dot) and correctly show empty state
+      against the real (currently dataless) cluster; seeded a real,
+      temporary demo task+action+memory_item+approval row directly via SQL
+      and confirmed it streamed through all four panels live, then cleaned
+      it up (0 rows remaining, confirmed by direct query). **A real client
+      bug caught by that live seeding, not assumed away:** the Task Feed
+      panel rendered the seeded row TWICE -- every SSE reconnect re-polls
+      from `cursor=null`, re-sending the same backlog, and the original
+      `useSse` hook had no de-dup. Fixed by keying a `Map` on a
+      caller-supplied stable ID extractor (`task_id`/`action_id`/
+      `item_id`/`approval_id`) inside the hook itself, applied uniformly
+      across all four panels; confirmed fixed by reloading and re-checking
+      the render. **A dev-only false alarm, chased down rather than left
+      ambiguous:** React StrictMode's double-invoked effects (default in
+      `next dev`) briefly open more than one `EventSource` per feed,
+      occasionally logging a "duplicate key" console warning during the
+      overlap -- confirmed via `npm run build && npm run start` (network
+      request counts: exactly one connection per feed, not several) that
+      this does NOT reproduce in production; not a real bug, not chased
+      further once confirmed. **Deliberately out of scope for this chunk,
+      stated not hidden:** the mutation path (`POST /approvals/{id}`, LLD
+      §11.2) -- Approve/Reject buttons render but are disabled with an
+      explanatory `title`, since the real architecture puts that behind
+      API Gateway + Lambda specifically so no write-capable DB credential
+      ever needs to reach a browser or serverless function; building that
+      is separate AWS/CDK infra work. The `inspector` feed's frozen event
+      schema (`{…, confidence, provenance}`) also doesn't carry per-recall
+      `similarity`/citations (those live in `decisions.citations`,
+      ungranted) -- §11.3's demo narrative wants more than this frozen feed
+      alone provides; noted in the panel's own comment as follow-up, not
+      silently under-delivered. `dashboard/README.md` documents setup,
+      architecture notes, and both findings above for whoever picks this
+      up next. **135 Python unit tests unchanged and still passing** --
+      nothing in `agent/` touched this chunk.
+OPEN (Phase 3, non-gating)  `agent/nodes/act_measure.py`'s own smoke test
+      still uses `override_backup_gate=True` rather than the now-real
+      network path -- wiring a live `CloudApiAdapter` through an actual
+      `act_measure` run is real follow-up, not done yet. `CCLOUD_TOKEN`
+      hasn't been added as a GitHub Actions repo secret yet (local `.env`
+      only). §8.4 crash-window reconciliation (W1-W4) not implemented. The
+      dashboard's mutation path (API Gateway + Lambda approvals/metrics/
+      webhooks, LLD §11.2) and CDK infra are NOT built -- read-only SSE
+      surface only, this chunk. Memory Inspector's similarity/citations
+      gap (above) not closed. Migration 003 still blocked on a real
+      prerequisite (seed corpus must exist first, invariant #1) -- not a
+      gap. `thread_id`/`task_id` reconciliation (`tasks.checkpoint_thread_id`)
+      not wired -- nothing mints or persists a `thread_id` yet, since
+      `main.py` (the SQS consumer that would own that) doesn't exist.
+      MCP/CloudWatch/ccloud legs of `observe(node)` step 1 still
+      unimplemented. 26257 is open right now only because of the user's
+      VPN -- treat it as still blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
-      unchanged, so don't assume it stays open next session.)
+      unchanged, so don't assume it stays open next session. No remaining
+      credential gaps block Phase 3 work -- all four named ones across the
+      last four chunks are now provisioned.)
 ```
 
-**Next action, in order (Phase 3 starts here):** (1) `AsyncCockroachDBSaver` bootstrap (LLD §6.3) — closes the checkpointer gap, unblocks migration 004; (2) provision `CCLOUD_TOKEN`, `ENGRAM_TARGET_PROBE_DSN`, `ENGRAM_TARGET_OPERATOR_DSN` (manual, all three close named gaps); (3) the dashboard/SSE surface (ILLUSIONIST) — Memory Inspector, the five demo metrics; (4) lifecycle workers (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) on Lambda; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists.
+**Next action, in order (Phase 3 continues):** (1) API Gateway + Lambda (approvals/metrics-proxy/webhooks, LLD §11.2) -- the natural next dashboard piece, unblocks real Approve/Reject; (2) lifecycle workers (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) on Lambda; (3) `main.py` (SQS consumer/entrypoint) -- mints a `thread_id`, reconciles it into `tasks.checkpoint_thread_id` (Phase 3 chunk 1's gap), and is also where a real (non-override) backup-gate call first gets exercised end to end; (4) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-11 — Session 30 · Built + live-verified the read-only dashboard/SSE surface (`dashboard/`); found and closed two more real provisioning gaps (`ENGRAM_READER_DSN`, `approvals` grant); caught a real client dedup bug via live seeding.** Scaffolded a new Next.js App Router project (TypeScript, Tailwind, shadcn/ui — HLD §5.6's locked stack) implementing all four LLD §11.1 SSE feeds (tasks/actions/inspector/approvals), each a server-side cursor poll (5s, LIMIT 25, maxDuration=60, 12 iterations) against `engram_reader`. **Before writing any dashboard code, checked whether this Next.js version (16.3.0, installed by create-next-app) still matches training-data assumptions** — the scaffold's own generated AGENTS.md warns it might not — and read the actual route-handler and streaming docs shipped in `node_modules/next/dist/docs/` before writing the SSE routes; confirmed the Web-standard `ReadableStream`+Response pattern and `export const maxDuration` convention are unchanged. **`ENGRAM_READER_DSN` was a real, previously-unnoticed provisioning gap, same shape as last session's target probe/operator roles**: `db/migrations/002_grants.sql` created the `engram_reader` ROLE back in Phase 1 but never gave it a LOGIN password, so it had never actually been connectable. Wrote `scripts/bootstrap_reader_role.py` (mirrors `bootstrap_target_roles.py`'s pattern exactly) — set a real password, wrote the DSN to `.env`, then live-verified the actual privilege boundary rather than just that the role exists: 8/8 checks, first run — SELECT succeeds on the three frozen dashboard views plus `observations`, SELECT correctly FAILS on base tables the views join (`remediation_actions`, `decisions`), INSERT correctly FAILS everywhere. **A second real gap surfaced while wiring the approvals panel specifically:** LLD §11.1's own frozen SSE table names an `approvals` feed reading the base TABLE directly ("poll status change"), but migration 002 never granted `engram_reader` SELECT on it — only `v_action_feed`'s partial LEFT JOIN columns (`approval_status`, `decided_by`) were reachable. Wrote a new migration, `005_reader_approvals_grant.sql` (a separate file rather than editing the already-applied, frozen 002 — consistent with how this project has always layered corrections onto frozen migrations), applied it live, and re-verified. **Live-verified in an actual browser, not just curled:** ran `npm run build` clean; confirmed all four SSE routes are correctly marked dynamic/server-rendered, not statically cached; loaded the dashboard in Chrome via claude-in-chrome, confirmed all four panels connect (green status dot, real 200s in the network tab) and correctly render empty state against the real, currently-dataless cluster; then seeded a real, temporary demo task+action+memory_item+approval row directly via SQL and watched it stream through all four panels live, before cleaning it up completely (confirmed 0 rows remaining by direct query afterward). **That live seed immediately caught a real client-side bug, not assumed away:** the Task Feed panel rendered the single seeded row TWICE — every SSE reconnect re-polls the server from `cursor=null`, which legitimately re-sends the same recent backlog, and the original `useSse` hook had no de-duplication at all. Fixed by moving de-dup into the hook itself, keyed on a caller-supplied stable ID extractor (`task_id`/`action_id`/`item_id`/`approval_id`, one per panel, each a module-level function so the effect doesn't re-run every render) — applied uniformly across all four panels, including `ApprovalQueuePanel`, which had its own ad hoc version of the same idea beforehand. Confirmed fixed by reloading and re-checking the render. **A separate, dev-only false alarm chased down to a confirmed non-issue rather than left ambiguous:** React StrictMode's double-invoked effects (on by default in `next dev`) briefly open more than one `EventSource` per feed, occasionally logging a "two children with the same key" console warning during the overlap. Rather than assume this was benign, ran `npm run build && npm run start` on a second port and compared: network request counts showed exactly one connection per feed (not several), and the rendered output was correct — confirmed this genuinely does not reproduce in production, not just guessed. **Deliberately out of scope for this chunk, stated up front and in the code, not discovered as an afterthought:** the mutation path (`POST /approvals/{id}`, LLD §11.2) needs API Gateway + Lambda in the real architecture specifically so a write-capable DB credential never has to sit in a browser or serverless function — Approve/Reject buttons render, disabled, with a `title` explaining why, rather than faking a write path `engram_reader` structurally cannot perform. The `inspector` feed's frozen event schema (`{…, confidence, provenance}`) also doesn't carry per-recall `similarity`/citations (those live in `decisions.citations`, which `engram_reader` has no grant on) — LLD §11.3's demo narrative wants richer detail than this frozen feed alone delivers; recorded as follow-up in the panel's own comment, not silently under-delivered. `dashboard/README.md` documents setup, the architecture notes above, and both the dedup bug and the StrictMode finding for whoever picks this up next. **135 Python unit tests unchanged and still passing** — nothing under `agent/` was touched this session.
+
+**2026-08-11 — Session 29 · `CCLOUD_TOKEN` provisioned + verified live; a real 401 diagnosed and fixed; the backup gate's non-empty response shape measured for the first time, one guessed field name corrected.** User provisioned a Service Account key via the CockroachDB Cloud console per Session 28's handed-off steps and asked to re-run `scripts/verify_ccloud.py`. **First real run genuinely failed, not staged:** `401 {"code": 16, "message": "invalid secret provided in authorization header; expected either an API key or a JWT"}` on BOTH the target and memory cluster probes — the same error on both meant it wasn't a scope problem (that would show as 403), it was the token itself. Diagnosed structurally without ever printing the secret: read the raw value's shape from `.env` (length 36, matches `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, zero `.` characters) and recognized it as a UUID — the Service Account's **Client ID**, not its **Client Secret/API key**. Told the user precisely what to go back and copy instead. Once corrected, **`scripts/verify_ccloud.py` passed 3/3 on the very next run**: `200` on the target cluster, and — genuinely informative, not just a pass/fail — a real `403 {"code": 7, "message": "unauthorized"}` on the memory cluster, proving the key is scoped to target-only, the exact opposite of the wrong-scope mistake `design/02-low-level-design.md` already has on record from 2026-08-03. **This was the first non-empty backups response ever captured against this account, and it immediately paid for itself**: the real shape is `{"backups": [{"id": <uuid>, "as_of_time": <ISO8601>}, ...], "pagination": null}` — the completion-timestamp field is `as_of_time`, not `completedTime`/`completed_at`/`finishedTime`, which is what `agent/tools/cloud_api.py`'s `decide_backup_gate()` had checked FIRST since it was written, purely as a best guess (the module's own docstring said as much at the time). Captured the real response as `fixtures/cloudapi-backups-target-nonempty.json` (checked for secrets — none; just backup UUIDs and timestamps, matching the existing `cloudapi-backups-basic.json`'s wrapper convention) and fixed `decide_backup_gate()` to check `as_of_time` first, keeping the old guessed names as fallbacks rather than deleting them outright (harmless to keep, in case a different API version ever uses one). Added 4 new tests against the real fixture to `tests/test_cloud_api.py` (16/16, up from 12) — including a canary asserting the fixture never regresses to the old wrong field name, and both an in-window and a stale-window case computed against the real captured timestamps with an explicit `now` so the tests stay deterministic regardless of what day they're actually run. **135 unit tests pass in total** (up from 131). Updated `docs/blocked-register.md` §8 from OPEN to RESOLVED with the full diagnosis, and `agent/tools/cloud_api.py`'s own module docstring to say MEASURED instead of ASSUMED for the case (b)/(c) shape. **Stated as still open, not silently closed:** `agent/nodes/act_measure.py`'s own smoke test still exercises the audited `override_backup_gate=True` escape hatch rather than this now-real network path end-to-end, and `CCLOUD_TOKEN` hasn't been added as a GitHub Actions repo secret yet — only verified locally. All three credential gaps named across Sessions 27–29 (`AsyncCockroachDBSaver` bootstrap, target probe/operator DSNs, `CCLOUD_TOKEN`) are now closed; nothing currently blocks the next Phase 3 pieces on missing credentials.
+
+**2026-08-11 — Session 28 · Phase 3 chunk 2: `engram_probe`/`engram_operator` provisioned live on the target cluster; `CCLOUD_TOKEN` handed to the user as the one remaining manual step.** New migration lineage `db/target/001_target_roles.sql` + `db/target/README.md`, deliberately separate from `db/migrations/` (memory-cluster only) — CLAUDE.md §2's "two clusters, two roles, never conflate them" now has a matching split in the migration directories themselves, not just in prose. The `.sql` file creates both roles with grants only (`engram_probe`: `SELECT`; `engram_operator`: `SELECT`+`CREATE`, matching HLD D6/§4's "CREATE INDEX, ANALYZE... no DROP/TRUNCATE/GRANT" exactly) and has no passwords in it, so it's safe to commit. `scripts/bootstrap_target_roles.py` did the credential-bearing half: generated two random passwords (`secrets.token_urlsafe`), set them via `ALTER ROLE ... WITH LOGIN PASSWORD` built through `psycopg.sql.Literal` (never string-interpolated, even though the generated passwords' alphabet made injection moot), constructed both DSNs from the existing `ENGRAM_TARGET_DSN`'s host/port/db, and wrote them straight into `.env` without ever printing them to any log or terminal output. **Ran live against the real target cluster — 7/7 checks, first run, no bugs — and, importantly, verified the actual privilege boundary rather than just that the roles exist:** created a disposable scenario table as admin (neither new role can `CREATE TABLE`), then proved `engram_probe` can `SELECT` but a real `CREATE INDEX` attempt raises `InsufficientPrivilege`, and `engram_operator` can `CREATE INDEX`+`ANALYZE` but a real `DROP TABLE` and a real `GRANT` both fail for the expected reason (`InsufficientPrivilege` / missing `WITH GRANT OPTION`) — the exact blast-radius boundaries the README's submission checklist wants documented, now measured rather than asserted. Confirmed separately (no code change needed) that `agent/tools/sql_probe.py`/`sql_operator.py` — which have carried a "falls back to admin DSN with a loud warning" docstring since Sessions 20/23 — now silently prefer the new dedicated DSNs, exactly as those docstrings said they would once provisioned. Reorganized `.env` afterward (the bootstrap script append the two new lines at end-of-file; moved them into the existing TARGET-cluster section, values never re-printed in the process, done via a script operating on the file directly rather than by re-typing anything) and mirrored the new keys — placeholders only — into `.env.example`. **Wrote `scripts/verify_ccloud.py`**, matching the existing `verify_ollama.py`/`verify_cohere.py`/`verify_s3.py` gate convention: probes the TARGET cluster's backups endpoint with `CCLOUD_TOKEN`, cross-checks the MEMORY cluster too specifically so a repeat of the wrong-scope mistake the LLD already documents (an earlier key 403'd on target, 200'd on memory, `design/02-low-level-design.md` line ~190) gets caught immediately rather than discovered mid-demo, and feeds the real response through the same `decide_backup_gate()` the agent itself calls. Ran it once against the current, empty `.env` as a self-test: correctly reports "not set" and exits 1 — the honest current state, not a fabricated pass. **`CCLOUD_TOKEN` itself is the one credential in this whole session that could NOT be self-provisioned**: minting a Cluster-Admin-scoped CockroachDB Cloud API key requires the Cloud web console, which needs a human in a browser — no SQL connection or API call available to this session can do it. Handed the user precise manual steps (CLAUDE.md §6, this entry): console → Service Account with Cluster Admin (not Operator) → scoped to `engram-target-sandbox` specifically → `.env` + GitHub secret → `scripts/verify_ccloud.py` to confirm. **131 unit tests unchanged and still passing** — nothing touched in `agent/` this session besides confirming existing fallback logic, so no regression risk was expected or found.
+
+**2026-08-11 — Session 27 · Phase 3 chunk 1: `AsyncCockroachDBSaver` bootstrapped live, checkpointer wired into `agent/graph.py`.** First Phase 3 action per last session's own "next action" list. Added `langchain-cockroachdb>=0.3.0` to `requirements.txt` (pulls `sqlalchemy-cockroachdb`+`psycopg-pool` transitively — heavier than this repo's otherwise psycopg3-only stack, noted not hidden, since it's the LLD-named checkpointer, not optional). **Before writing anything, read the actual installed package source** (`checkpointer/base.py`/`async_saver.py` in the 0.3.0 wheel) rather than trusting the LLD's own prior description of it — found it disagreed with `db/migrations/004_checkpoint_ttl.sql` and design/02-low-level-design.md §6.2 on two real points, both now corrected: (1) the checkpoint tables `AsyncCockroachDBSaver.setup()` creates are **unprefixed** (`checkpoints`/`checkpoint_blobs`/`checkpoint_writes`+a small `checkpoint_migrations` version table) — the `langgraph_`-prefixed names in both files were a guess made before the package was ever installed, never verified; (2) the library ships its own `saver.aenable_ttl()` using **`ttl_expiration_expression`** against a `created_at` column `setup()` adds itself, explicitly to avoid the full-table-rewrite that migration 004's original `ttl_expire_after` approach would have triggered — the exact CRITICAL warning already written into 001/004's own comments, just aimed at the wrong mechanism. Rewrote 004 to inline the library's real `ENABLE_TTL_SQL` template with real table names; corrected the LLD's §6.2 comment block to match. Wrote `scripts/bootstrap_checkpointer.py`: refuses to run against a non-empty checkpoint cluster (checked before touching anything), runs `setup()`, then applies the corrected migration 004 SQL **immediately after, in the same process** — closing the gap two separate manual steps would leave, per the runbook's own "IMMEDIATELY" wording — then verifies via `SHOW CREATE TABLE` that `ttl_expiration_expression` actually landed and all three tables are still empty. **Ran live against the real memory cluster (VPN confirmed reachable this session via a raw TCP connect to the actual Cockroach Cloud host, not just localhost) — first run, no bugs, all three tables created/TTL'd/verified empty.** Wired `checkpointer: BaseCheckpointSaver | None = None` into `build_graph()`, passed straight to `graph.compile(checkpointer=checkpointer)` — additive only, `None` keeps existing behavior identical (confirmed by a same-run regression check, not assumed). **A second real gap surfaced while wiring this in, stated rather than papered over:** the LLD's own "`thread_id = task_id`" (§3) doesn't match its own schema — `tasks` (migration 001) has a separate `checkpoint_thread_id` column, because a LangGraph `thread_id` has to be chosen and handed to `graph.ainvoke()`'s `config` *before* the graph runs, while the real `task_id` isn't minted until `observe(node)` dedupes an incident *during* that same run. Nothing reconciles the two yet — no `main.py` exists to mint a `thread_id` in the first place. Logged as real follow-up, not resolved by assumption. `scripts/smoke_test_checkpointer.py` (new, deliberately cheap — the fast/no-anomaly path only, no Ollama call, no target-cluster index creation, since this test is about persistence not re-proving the full loop `smoke_test_graph.py` already covers): **7/7 checks, first run, no bugs** — a real probe run through the compiled graph with a real checkpointer and an explicit `thread_id`, a genuine row confirmed in `checkpoints` both by direct SQL and by `saver.aget_tuple()`, the restored checkpoint's `phase` channel matching the run's actual final state, and a same-run proof that an uncheckpointed `build_graph()` call is completely unaffected. **131 unit tests unchanged and still passing** (the signature change is opt-in only). Migration 003 remains correctly blocked on its real prerequisite (seed corpus, invariant #1) — untouched this session.
 
 **2026-08-11 — Session 26 · Wired `gate`+`act_measure` into `agent/graph.py`; declared Phase 2 closed.** Extended `build_graph()` to the full five-node loop: `observe→recall→reason→gate→act_measure→END`, adding `_route_after_gate` alongside the existing `_route_after_observe` — `gate` returns `phase='gate'` on approval (routes to `act_measure`) or `phase='done'` on reject/expiry (routes to `END`), mirroring the pattern already established for `observe`'s own conditional edge. **Explicitly NOT wired, stated rather than silently dropped:** LLD §4's `gate→reason` re-plan-on-measurement-failure edge — `act_measure` already sets `outcome='failure'` on a measured regression, but nothing routes that back to `reason` yet, because a real re-plan loop needs its own loop-prevention design (how many retries before giving up?) that doesn't exist. Rewrote `scripts/smoke_test_graph.py` to invoke the *compiled graph* through the full loop rather than calling nodes directly — a meaningfully different test than `smoke_test_act_measure.py`'s (which called `act_measure` directly): this one proves the LangGraph wiring itself routes correctly end to end. **A real timing bug, caught and fixed in the test, not the graph:** the concurrent-approval helper's deadline started ticking from the moment `graph.ainvoke()` was called, but `reason(node)`'s real Ollama Cloud round-trip (measured ~9s elsewhere this project) runs entirely BEFORE `gate` ever creates a row to approve — the original 12s deadline was already exhausted by the time there was anything to find, so `gate` correctly (if unhelpfully, for the test) expired instead of getting approved. Widened the deadline to 50s and `gate_timeout_s` to 60s; also hardened the test's own assertions to report a clean failure instead of crashing with `TypeError: 'NoneType' object is not subscriptable` when `act_measure` never ran. Re-ran clean: **14/14, first success after the fix**, one `graph.ainvoke()` call producing a real concurrent approval, a real Ollama Cloud proposal, a real applied index, and a real measured **27ms → 1ms** improvement — the exact "watch the state machine execute an end-to-end loop on live ammunition" outcome asked for several sessions ago, now delivered through the actual compiled graph, not the underlying node functions. Added 3 more routing unit tests (`_route_after_gate`'s three cases) to `tests/test_graph.py`. **Declared Phase 2 closed as a stated judgment call, not a rediscovered boundary:** no current doc defines "Phase 2" — the original phase breakdown lived in the deleted, pre-pivot `research/execution_roadmap.md`. This session retroactively labels Phase 1 = schema/DAO/providers (already done), Phase 2 = `agent/nodes`+`agent/tools`+`agent/graph.py` (closed now that all five LLD §5 nodes exist and are wired together), Phase 3 = dashboard/SSE + lifecycle workers + remaining manual credentials — a boundary chosen to match what was actually built, flagged as a choice rather than presented as settled fact. **131 unit tests + 144 live checks now pass in total.**
 

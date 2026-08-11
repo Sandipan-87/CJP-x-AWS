@@ -1,0 +1,17 @@
+{
+  "_source": "GET /api/v1/clusters/ff3851bb-3869-4772-ba64-fd3076b3917b/backups",
+  "_http_status": 200,
+  "_captured": "2026-08-11",
+  "_cluster_plan": "unknown (target sandbox)",
+  "_note": "First real non-empty response ever captured against this account -- closes the 'assumed, not measured' gap agent/tools/cloud_api.py's own docstring flagged. Field is `as_of_time`, not `completedTime`/`completed_at`/`finishedTime` (the prior best guess) -- decide_backup_gate() corrected to match, 2026-08-11.",
+  "response": {
+    "backups": [
+      { "id": "3fd6cab6-b764-41d3-b943-052da26c271d", "as_of_time": "2026-08-06T00:00:00Z" },
+      { "id": "f5f1c41d-3d8e-4263-ba12-868084e64620", "as_of_time": "2026-08-07T00:00:00Z" },
+      { "id": "5f4f0a93-d62a-414a-971f-aa06b029ad10", "as_of_time": "2026-08-08T00:00:00Z" },
+      { "id": "3b2e376c-15b6-4b67-b742-2f487d9f49c3", "as_of_time": "2026-08-09T00:00:00Z" },
+      { "id": "d80e2dbd-10df-4e40-aa90-ad9cf847e9d5", "as_of_time": "2026-08-11T00:00:00Z" }
+    ],
+    "pagination": null
+  }
+}

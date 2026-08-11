@@ -422,13 +422,18 @@ CREATE TABLE embedding_cache (
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 ) WITH (ttl_expire_after = '180 days'::interval);
 
--- LangGraph checkpoint tables (langgraph_checkpoints / langgraph_checkpoint_blobs /
--- langgraph_checkpoint_writes) are created by AsyncCockroachDBSaver.setup().
+-- LangGraph checkpoint tables (checkpoints / checkpoint_blobs / checkpoint_writes -- UNPREFIXED,
+-- corrected 2026-08-11 Phase 3: the original "langgraph_"-prefixed names here were an unverified
+-- guess, contradicted by reading the actual installed langchain-cockroachdb==0.3.0 source) are
+-- created by AsyncCockroachDBSaver.setup().
 -- CRITICAL (docs v26.2, row-level TTL): adding ttl_expire_after to an EXISTING table triggers
 -- a FULL TABLE REWRITE — new hidden crdb_internal_expiration column + backfill of every row.
--- Therefore: run saver.setup() at bootstrap on an EMPTY cluster, then IMMEDIATELY
--- ALTER TABLE ... SET (ttl_expire_after = '30 days') on all three, BEFORE any checkpoint
--- data exists (migration 004). Never ALTER TTL on them again once hot (invariant #7).
+-- Therefore: run saver.setup() at bootstrap on an EMPTY cluster, then IMMEDIATELY apply TTL,
+-- BEFORE any checkpoint data exists (migration 004). Corrected 2026-08-11: the mechanism is NOT
+-- a hand-rolled `ttl_expire_after` ALTER -- the library ships its own `saver.aenable_ttl()`,
+-- which uses `ttl_expiration_expression` against a `created_at` column `setup()` already adds,
+-- specifically to avoid the full-rewrite this paragraph warns about. Migration 004 inlines that
+-- exact SQL. Never ALTER TTL on them again once hot (invariant #7).
 
 -- Read-only dashboard views (frozen surface, §11)
 CREATE VIEW v_recent_tasks AS
