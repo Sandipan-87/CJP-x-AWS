@@ -715,11 +715,81 @@ DONE (Phase 3, chunk 10)  **SQS/EventBridge/ECS infra for `agent/main.py`
       container metadata endpoint, an application-code change, not an
       infra one.
 
+DONE (Phase 3, chunk 11)  **The agent image is actually built and pushed to
+      ECR, 2026-08-12 -- `scripts/bootstrap_agent_infra.py` run for real, a
+      new scoped `engram-ecr-push` IAM user created, two new GitHub repo
+      secrets stashed, `build-agent-image.yml` run and verified against the
+      real registry.** `bootstrap_agent_infra.py`'s first real run (under
+      `engram-deploy`) came back exactly as designed: the Secrets Manager
+      secret `engram/agent-secrets` created successfully (that policy
+      already had `engram/*` scoped from Session 33), but `engram-agent`
+      ECR repo creation failed -- `EngramCdkDeploy` had no `ecr:*` grant at
+      all yet, a real, previously-untested gap, not assumed present. Handed
+      the user exact policy JSON for two things: a new statement on
+      `EngramCdkDeploy` (`ecr:CreateRepository`/`DescribeRepositories`/
+      `TagResource`, scoped to the `engram-agent` repo ARN) and a brand-new,
+      narrowly-scoped IAM user `engram-ecr-push` (`ecr:GetAuthorizationToken`
+      on `"*"` -- the same no-ARN-scoping limitation as CloudWatch's own
+      metrics actions -- plus the six push actions scoped to that one repo
+      ARN) -- the user's own choice, offered explicitly rather than decided
+      silently: a brand-new dedicated identity over widening `engram-deploy`
+      further, keeping CI from ever holding deploy-level access. Re-running
+      the bootstrap under `engram-deploy` after the policy widening
+      succeeded fully: ECR repo created, secret already existed so its
+      value was refreshed. Verified the new `engram-ecr-push` credentials'
+      identity via `sts get-caller-identity` before trusting them for
+      anything. **Committing and pushing this session's accumulated work
+      was itself asked about first, not assumed** -- `build-agent-image.yml`
+      can't run until it exists on the remote, which meant pushing
+      Sessions 35/36's still-uncommitted work (telemetry.py, main.py, the
+      new CDK stack) too; confirmed with the user before running `git push`.
+      **Two real bugs found only once an actual GitHub Actions run was
+      attempted, neither visible from local review alone:** (1) `gh
+      workflow run` returned a misleading `422 "Workflow does not have
+      workflow_dispatch trigger"` even though the committed YAML plainly
+      had one -- GitHub's real behavior turned out to be silently failing
+      to register ANY trigger when the file fails to parse at all, and
+      `on:` reads fine to a human skimming it; running the file through
+      `yaml.safe_load()` locally (something `ast.parse`-style checks used
+      elsewhere in this project don't cover, since this is YAML, not
+      Python) immediately surfaced the real cause: an unquoted colon inside
+      a step's `name:` value (`"Build and push (tags: git sha + latest)"`)
+      -- `: ` inside an unquoted YAML scalar starts a nested mapping.
+      Quoted the string, fixed. (2) The first real build then failed
+      differently: `COPY workers/common/certs/memory-ca.crt` couldn't find
+      the file in the build context -- the repo's own blanket `*.crt` rule
+      in `.gitignore` had silently excluded it from git entirely, the exact
+      same mistake class already on record TWICE in this project (the old
+      blanket `db/` and `fixtures/` rules) -- it existed locally (used by
+      `workers/common/db.py` and `infra/build.py`'s local Lambda bundling)
+      but had never actually been committed, invisible until something
+      finally built from a truly clean checkout. Verified it's genuinely
+      public before un-ignoring (`openssl x509`: subject/issuer both `ISRG
+      Root X1`, Let's Encrypt's own public root CA, zero private-key
+      material) -- checked, not assumed safe, same discipline as the
+      `fixtures/` un-ignore. Added narrow `!workers/common/certs/*.crt`/
+      `!dashboard/certs/*.crt` exemptions rather than removing the blanket
+      rule outright (transient CI-fetched certs like `cluster-ca.crt`/
+      `target-ca.crt` correctly stay ignored). **`dashboard/certs`'s own
+      exclusion turned out to be a DIFFERENT, deliberate, already-documented
+      choice** (its own `.gitignore` comment: "fetched CA cert... 
+      refetchable" via a README setup step) -- confirmed before touching
+      it, left alone, not lumped in with the real `workers/` bug. Committed
+      both fixes, pushed, re-triggered: **`build-agent-image.yml` succeeded
+      in 41s**, and the pushed `latest` tag was confirmed to actually exist
+      in ECR afterward via a real `ecr:BatchGetImage` call under the new
+      `engram-ecr-push` credentials (real digest returned) -- not assumed
+      from a green checkmark alone. **`cdk deploy` still deliberately NOT
+      run**, per the same standing rule restated every session this applies.
+
 OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       implemented -- `exactly_once_conflicts_detected` correctly stays
-      unemitted because of it (Session 34). `CCLOUD_TOKEN` hasn't been
-      added as a GitHub Actions repo secret yet (local `.env` only). Real
-      CloudWatch publish is still unverified end-to-end: `engram-phase0`
+      unemitted because of it (Session 34). **Correction to a stale claim
+      this list carried for several sessions**: `CCLOUD_TOKEN` IS already a
+      GitHub Actions repo secret (`gh secret list` confirms it, dated
+      2026-08-11) -- the "still local-only" note below was never re-checked
+      after Session 29 and had gone stale; removed from the Next-action
+      list accordingly. Real CloudWatch publish is still unverified end-to-end: `engram-phase0`
       (the only credential in `.env`) is deliberately S3-only and
       correctly gets `AccessDenied` on `cloudwatch:PutMetricData`/
       `ListMetrics` (confirmed live twice now -- Session 34's
@@ -729,13 +799,15 @@ OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       widening `engram-phase0` itself would be the wrong identity to grant
       it to. **The SQS queue, EventBridge rule, and ECS service/task-
       definition are now fully DEFINED (`infra/engram_infra/agent_stack
-      .py`, `cdk synth` clean) but NOT DEPLOYED** -- the actual
+      .py`, `cdk synth` clean) and the real container image is now BUILT
+      AND PUSHED to ECR (chunk 11 -- `engram-agent:latest`, confirmed via a
+      real `ecr:BatchGetImage` call) but NOTHING IS DEPLOYED** -- the actual
       `consume_loop()`/SQS transport and the ECS Fargate deployment remain
-      untested against real AWS until `cdk deploy` runs, which itself
-      needs (in order): the two new GitHub Actions repo secrets for the
-      ECR-push identity, one successful `build-agent-image.yml` run, and
-      explicit user go-ahead for the deploy itself (see chunk 10's own
-      "deliberately NOT done" paragraph). The lifecycle-worker Lambdas
+      untested against real AWS until `cdk deploy EngramAgentStack` runs,
+      which needs only explicit user go-ahead at this point (every
+      prerequisite chunk 10 named -- the ECR-push identity, the two GitHub
+      secrets, a successful image build -- is now closed). The
+      lifecycle-worker Lambdas
       (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) are NOT
       built -- a distinct piece of work from the agent's own SQS queue
       (see chunk 10's "EventBridge scope" note). The dashboard itself
@@ -756,13 +828,15 @@ BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       webhooks are all fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) actually deploy `EngramAgentStack` -- run `scripts/bootstrap_agent_infra.py` under `engram-deploy`, add the two new `ENGRAM_ECR_PUSH_AWS_*` GitHub secrets under a dedicated scoped IAM identity, run `build-agent-image.yml` once, then ask the user before `cdk deploy EngramAgentStack` itself (real, billable ECS/VPC/SQS creation); (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (6) the `gate→reason` re-plan edge, once a loop-prevention design exists.
+**Next action, in order (Phase 3 continues):** (1) ask the user for explicit go-ahead, then `cdk deploy EngramAgentStack` -- every prerequisite (ECR repo, secret, scoped push identity, GitHub secrets, a successfully pushed image) is now closed, this is the only remaining step and it is real, billable ECS/VPC/SQS resource creation; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-12 — Session 37 · The agent's container image is actually built and live in ECR now -- `scripts/bootstrap_agent_infra.py` run for real, a new scoped `engram-ecr-push` IAM user created, GitHub secrets stashed, `build-agent-image.yml` run and its output verified against the real registry. `cdk deploy` still deliberately not run.** First real run of `bootstrap_agent_infra.py` (under `engram-deploy`) came back exactly split as designed: the `engram/agent-secrets` Secrets Manager secret was created successfully (that policy already had `engram/*` scoped from Session 33's widening), but `engram-agent` ECR repo creation failed outright -- `EngramCdkDeploy` had no `ecr:*` grant of any kind, a real, previously-untested gap in that policy, not assumed to already be covered. Rather than deciding unilaterally, asked the user to choose between widening `engram-deploy` itself to cover ECR push, or creating a dedicated new IAM identity for it -- they chose the dedicated identity (matching this project's existing pattern of purpose-scoped credentials: `engram-phase0`, `engram-deploy`, now `engram-ecr-push`), so handed over exact policy JSON for both pieces: a new statement on `EngramCdkDeploy` (`ecr:CreateRepository`/`DescribeRepositories`/`TagResource` scoped to the repo ARN) and a full policy for the new `engram-ecr-push` user (`ecr:GetAuthorizationToken` on `"*"` -- the same no-ARN-scoping limitation CloudWatch's own metrics actions already have -- plus the six push actions scoped to that one repo). Walked the user through the exact IAM console steps for both when asked. Re-running the bootstrap under `engram-deploy` after the widening succeeded fully: ECR repo created, secret value refreshed. Verified the new `engram-ecr-push` credentials' identity via `sts get-caller-identity` before trusting them for anything, then pushed both key values into GitHub repo secrets via `gh secret set` (values never echoed back or written to any file). Running `build-agent-image.yml` required the workflow to exist on the remote at all, which meant committing and pushing Sessions 35/36's still-uncommitted work (`agent/telemetry.py`, `agent/main.py`, the new CDK agent stack, tests) too -- asked the user explicitly before running `git push` to main, rather than assuming a green light from "trigger the build" alone. **Two real bugs surfaced only by an actual GitHub Actions run, neither visible from local review or `ast.parse`-style checks:** (1) `gh workflow run` returned a misleading `422 "Workflow does not have workflow_dispatch trigger"` even though the committed YAML plainly had one under `on:` -- it turned out GitHub silently fails to register ANY trigger at all when a workflow file fails to parse, and nothing about the 422 message hints at a parse error specifically. Running the file through `yaml.safe_load()` locally immediately found the real cause: an unquoted colon inside a step's `name:` value (`Build and push (tags: git sha + latest)`) -- `: ` inside an unquoted YAML scalar starts a nested mapping. Quoted the string; fixed. (2) The next real build attempt failed differently: `COPY workers/common/certs/memory-ca.crt` couldn't find the file in the build context at all -- the repo's own blanket `*.crt` rule in `.gitignore` had silently excluded it from git, the same mistake class already on record TWICE in this project (the old blanket `db/` and `fixtures/` rules) -- the file existed locally (and is hardcoded by path in `workers/common/db.py`, silently relying on every past deploy having happened from a machine that already had it) but had never actually been committed, invisible until something finally built from a genuinely clean checkout. Verified it's actually public before un-ignoring, not assumed safe: `openssl x509` showed subject/issuer both `ISRG Root X1` (Let's Encrypt's own public root CA), zero private-key material. Added narrow `!workers/common/certs/*.crt`/`!dashboard/certs/*.crt` exemptions to the blanket rule rather than removing it outright, so CI-fetched transient certs (`cluster-ca.crt`/`target-ca.crt` in the existing workflows) correctly stay ignored. Checked `dashboard/certs`'s identical-looking exclusion before touching it and found it was a different, already-deliberate, already-documented choice (its own `.gitignore` comment: "fetched CA cert... refetchable" via a README step) -- left alone, not lumped in with the real bug. Committed both fixes, pushed, re-triggered: `build-agent-image.yml` succeeded in 41 seconds, and confirmed the pushed `latest` tag actually exists in ECR afterward via a real `ecr:BatchGetImage` call under the new credentials (a real image digest returned) -- not assumed correct from a green checkmark alone. **Also corrected a stale claim this file had been carrying since around Session 29**: `CCLOUD_TOKEN` IS already a GitHub Actions repo secret (`gh secret list` confirms it, dated 2026-08-11) -- the "still local-only" note had never been re-checked and removed after it was actually added, and is now removed from the Next-action list. **Every prerequisite for `cdk deploy EngramAgentStack` is now closed** -- explicit user go-ahead is the only thing standing between here and a real deployed ECS Fargate service, and that line is deliberately still being held, per this project's own standing rule restated every session it applies.
 
 **2026-08-12 — Session 36 · Built the SQS/EventBridge/ECS infra needed to deploy `agent/main.py` -- a new `EngramAgentStack` CDK stack, `cdk synth` clean, deliberately NOT deployed.** Confirmed directly before writing anything: no `docker` binary exists on PATH in this dev environment at all, and unlike the Lambda workers (`pg8000`, pure Python, worked around this via `infra/build.py`'s hand-assembled packages), `agent/`'s own dependencies (`psycopg[binary]`, and transitively `numpy`/`psycopg2-binary`/`greenlet` via `langchain-cockroachdb`) rule that trick out -- a real container image is unavoidable for ECS Fargate regardless. Resolved the same way this project already resolved the analogous local-network block (Session 9's GitHub-hosted-runners workaround for the squid-blocked port 26257): a new `.github/workflows/build-agent-image.yml` (GitHub-hosted runners have Docker) builds and pushes the agent's image into an ECR repository the new CDK stack only ever IMPORTS by name, never creates -- the same "CDK imports, something else provisions" split this project already uses for every Secrets Manager secret, now extended to a second AWS resource type for the identical reason. A new `scripts/bootstrap_agent_infra.py` creates that ECR repo plus a single JSON Secrets Manager secret, `engram/agent-secrets` (the memory/target DSNs, Cohere/Ollama API keys, `CCLOUD_TOKEN`) -- one ARN rather than one secret per value, matching this project's established preference for fewer IAM statements; expected to fail under `engram-phase0` (S3-only by design), the same shape as every prior AWS-side provisioning gap here. **Networking decided here since nothing upstream specifies it**: rather than `ec2.Vpc.from_lookup()` against the account's default VPC (which needs a real AWS context lookup at synth time), the stack creates its own dedicated `nat_gateways=0` VPC -- keeping `cdk synth` needing zero real AWS credentials, confirmed by checking that no `cdk.context.json` was created, the same offline-synthesizable property `EngramApprovalsStack` already has. Fargate runs in a PUBLIC subnet with `assign_public_ip=True` rather than a private subnet behind a NAT Gateway, since every external dependency here (Cohere, Ollama Cloud, both CockroachDB clusters) is already internet-reachable and a NAT Gateway's ~$32/month minimum buys nothing functionally for a single always-on task -- CLAUDE.md's own cost-consciousness (§4: "Free tier... budget paid before rehearsal") applied to a new AWS service. **No Application Load Balancer** either: SQS is pulled, not pushed, so nothing needs to route inbound requests to this task; ECS's own container-level `healthCheck` (the identical `python -c "urllib.request.urlopen(...)"` probe the new `Dockerfile`'s own `HEALTHCHECK` instruction already runs) achieves LLD §12's actual goal -- detect and replace an unhealthy task -- without an ALB's ongoing cost for zero benefit here. **EventBridge scope deliberately narrow, stated rather than silently expanded past what was asked**: only the 5-minute sweep rule is wired at all; the 1h-consolidate/nightly-decay schedules CLAUDE.md's own top-level architecture line names are, per LLD §9, separate not-yet-built lifecycle-worker Lambdas with no SQS/agent-graph involvement, already tracked as a distinct future item, not folded into this stack. Even the sweep rule itself is created `enabled=False`: no sweep ENUMERATOR exists anywhere in this codebase to decide, every 5 minutes, which scope/cluster/table/query is actually worth probing (the same still-unimplemented MCP/CloudWatch/ccloud collection legs `observe(node)` step 1 has needed since it was written) -- firing a fixed example message forever would manufacture a fake recurring "incident," not simulate a real sweep. Its target payload IS a real, `agent/main.py`-schema-valid example (the identical shape `scripts/smoke_test_main.py` already proved processable end to end), so flipping it on later is a one-line change once a real enumerator exists, not a redesign. **Two real bugs, both caught by `cdk synth` itself, not assumed away:** granting the Secrets Manager read to `task_definition.execution_role` before calling `add_container()` failed on the first synth attempt with a `jsii` null-deserialization error -- `FargateTaskDefinition` only lazily creates an execution role once something (the ECR image + log driver) actually requires one; fixed by moving that grant after `add_container()`. Separately, `cdk synth`'s own Construct-Annotations output flagged that the `FargateService` had no `circuit_breaker` configured, warning that a task which can never start healthy (e.g. deploying before any image has ever been pushed) could leave `cdk deploy` hanging for up to 3 hours instead of failing fast; added `circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True)`, warning gone on re-synth. IAM, same least-privilege discipline as every SQL role and Lambda in this project: the task role gets `cloudwatch:PutMetricData` (`Resource: "*"` -- the same documented no-ARN-scoping limitation `approvals_stack.py` already records for `GetMetricData`/`ListMetrics`, not a choice made here), SQS consume scoped to the one queue, and read on the one secret; the execution role separately gets ECR pull, log group write, and the same secret's read (ECS's own role split, not a redundant grant). Neither `aws-cdk-lib` (Python) nor the `cdk` CLI were installed in this session's environment at all -- installed both fresh (`pip install -r infra/requirements.txt`; `npx aws-cdk@2` rather than a global npm install, since no `cdk` binary existed on PATH either) before anything could be verified. **`cdk synth` verified clean for `EngramAgentStack` alone, `EngramApprovalsStack` alone (confirming the new stack didn't disturb the existing deployed one), and both together** -- real verification, not assumed compatible. **Deliberately NOT done, stated plainly, not silently skipped:** no `cdk deploy` was attempted -- real, billable VPC/ECS/SQS resource creation, and this project's own standing rule is to ask before every consequential/billable AWS action, exactly as Sessions 31/32 already established for the approvals Lambda. The two new GitHub Actions repo secrets the build workflow needs (`ENGRAM_ECR_PUSH_AWS_ACCESS_KEY_ID`/`_SECRET_ACCESS_KEY`, under a NEW, narrowly-scoped IAM identity -- explicitly NOT `engram-deploy`, since a CI credential that only pushes one image doesn't need CDK's much broader deploy surface) don't exist yet, so the image-build workflow has never run and no image exists in ECR yet either. `agent/main.py`'s `_holder_id()` still falls back to hostname+pid rather than a real ECS task ARN (fine for `desired_count=1`, but unchanged from last session -- fetching the real ARN needs the ECS container metadata endpoint, an application-code change orthogonal to this session's infra work, not touched here). `infra/README.md` now documents the complete, not-yet-executed deploy sequence for whoever runs it next.
 
