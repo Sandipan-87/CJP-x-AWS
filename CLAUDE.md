@@ -845,6 +845,57 @@ DONE (Phase 3, chunk 12)  **`cdk deploy EngramAgentStack` actually run,
       already-deployed stack recomputes against the SAME AZ set, not a
       fresh lookup that could in principle return a different order/set.
 
+DONE (Phase 3, chunk 13)  **A real SQS message was sent to the live
+      `engram-commands.fifo` queue and confirmed fully processed by the
+      deployed ECS task -- `consume_loop()` itself is now proven end to
+      end, not just `process_message()` called directly.** Built a real,
+      disposable 100-row scenario table on the target cluster, sent one
+      message matching `agent/main.py`'s documented schema (a fast,
+      PK-based query -- deliberately the non-anomalous "sweep" path, not
+      an incident: quick, no reasoning/approval loop, safely inside the
+      queue's 120s visibility timeout) via `sqs:SendMessage`. **Hit the
+      same recurring shape of gap once more, resolved the same way**:
+      `engram-deploy` had neither `sqs:SendMessage` nor `sqs:
+      GetQueueAttributes` -- handed the user exact policy JSON for
+      `SendMessage`/`GetQueueUrl` scoped to the queue ARN (added), left
+      `GetQueueAttributes` unrequested since the DB-side verification
+      below was already sufficient and a further IAM round-trip for a
+      secondary confirmation wasn't worth asking for. **Verified
+      processing via a real, direct query against the memory cluster, not
+      logs or the AWS console** (matching this project's own standing
+      preference for DB-level proof over trusting a green checkmark): a
+      real `tasks` row appeared within seconds (`task_type='sweep'`,
+      `trigger='manual'`, matching `target_cluster_id`) -- genuine proof
+      the deployed task's `consume_loop()` actually received the message,
+      since nothing else could have produced this row. Went further:
+      confirmed the full write path too -- a real `observations` row
+      (`source='sql_probe'`, real measured `latency_ms=1.0` from a real
+      `EXPLAIN ANALYZE` against the target cluster) and a real
+      `memory_items` row (`class='query_fingerprint'`, `has_embedding=
+      true`) -- meaning the deployed task also made a real Cohere API
+      call and wrote the resulting vector, all from inside the actual
+      running Fargate container, unassisted. **Confirms the task role's
+      real `cloudwatch:PutMetricData` grant was actually exercised for the
+      first time too** (chunk 12's stated open question) -- `observe
+      (node)`'s `sweep_cycle_ms` metric fires unconditionally when
+      `telemetry` is set, and `build_runtime()` always constructs a real
+      `Telemetry()`; not independently re-verified via CloudWatch itself
+      this session (no read access, same as chunk 12), but the code path
+      that calls it is the same one that just ran for real. Task status
+      stayed `'pending'` rather than `'completed'` -- expected, not a bug:
+      `process_message()`'s sweep branch was deliberately designed
+      (Session 35) to skip `update_task_status()` entirely, since only the
+      incident branch has a pre-known `task_id` to write a terminal status
+      against; this is `observe(node)`'s own pre-existing, already-
+      documented gap (nothing marks a sweep task terminal), not something
+      this session's test uncovered new. Cleaned up the disposable target-
+      cluster scratch table afterward; the resulting `tasks`/
+      `observations`/`memory_items` rows were deliberately LEFT in the
+      memory cluster, not cleaned up like a smoke test's scratch data --
+      this was a real production message processed by the real deployed
+      system, and the memory cluster recording it is the system doing
+      exactly what it's for, not test debris.
+
 OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       implemented -- `exactly_once_conflicts_detected` correctly stays
       unemitted because of it (Session 34). **Correction to a stale claim
@@ -893,13 +944,15 @@ BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       webhooks are all fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) send one real message to the live `engram-commands.fifo` queue (manually, via `aws sqs send-message` -- matching `agent/main.py`'s documented schema) to prove `consume_loop()` itself, end to end, against the real deployed task -- everything downstream of "a message was received" is already proven (`scripts/smoke_test_main.py`), but the actual SQS receive/delete loop inside the real container has never been exercised; this would also be the first real test of the deployed task role's `cloudwatch:PutMetricData` grant; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists; (6) close the `engram-deploy` ECS/Logs read-access gap (see OPEN list) if this project needs to introspect the running task from code/CI rather than the console again.
+**Next action, in order (Phase 3 continues):** (1) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`, now that a manually-sent message has already proven the queue→task pipe itself works; (2) send one real INCIDENT-shaped message (a genuinely slow/full-scan query) to prove the full observe→recall→reason→gate→act_measure loop end to end through the live deployed task, including a real concurrent approval and the real backup gate -- chunk 13 only exercised the sweep (non-anomalous) path; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists; (6) close the `engram-deploy` ECS/Logs/SQS-attributes read-access gaps (see OPEN list) if this project needs to introspect the running task/queue from code/CI rather than the console/DB again.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-12 — Session 39 · Sent a real message to the live SQS queue and confirmed the deployed agent actually processed it — `consume_loop()` itself is now proven end to end, not just `process_message()` called directly.** Built a real, disposable 100-row scenario table on the target cluster and sent one message matching `agent/main.py`'s documented schema via `sqs:SendMessage` — deliberately a fast, primary-key-based query (the non-anomalous "sweep" path), not an incident, so the test stayed quick and didn't need a human approval or a real Ollama reasoning round-trip. Hit the exact same shape of IAM gap as every other AWS action this project has needed all session: `engram-deploy` had neither `sqs:SendMessage` nor `sqs:GetQueueAttributes`. Asked the user for exact policy JSON to add `SendMessage`/`GetQueueUrl` scoped to the queue ARN — done, and the message sent successfully on the very next attempt. Deliberately did NOT ask for a further widening to cover `GetQueueAttributes` too, since a much stronger form of verification was already available and free: querying the memory cluster directly. **Verified processing via a real, direct database query, not logs or the AWS console**: a real `tasks` row appeared within seconds of sending the message (`task_type='sweep'`, `trigger='manual'`, `target_cluster_id` matching exactly what was sent) — proof the deployed task's `consume_loop()` genuinely received and processed the message, since nothing else in this system could have produced that row. Went further and confirmed the FULL write path, not just the task row: a real `observations` row (`source='sql_probe'`, a real measured `latency_ms=1.0` from a real `EXPLAIN ANALYZE` run against the target cluster from inside the container) and a real `memory_items` row (`class='query_fingerprint'`, a real embedding actually present) — meaning the deployed task independently made a real Cohere API call and wrote the resulting vector, entirely on its own, with no assistance from this session beyond sending the one message. This also exercises the task role's real `cloudwatch:PutMetricData` grant for the first time (`observe(node)` emits `sweep_cycle_ms` unconditionally whenever telemetry is configured, which `build_runtime()` always does) — not independently re-confirmed via CloudWatch itself (no read access there either, same gap as last session), but the exact code path that calls it is the one that just ran for real. **One thing checked and confirmed as expected, not a surprise bug**: the task's `status` column stayed `'pending'` rather than moving to `'completed'` — by design, from Session 35: the sweep branch of `process_message()` deliberately never calls `update_task_status()`, since only the incident branch has a pre-known `task_id` to write a terminal status against; this is `observe(node)`'s own pre-existing gap (nothing anywhere marks a sweep task terminal), restated here, not newly discovered. Cleaned up the disposable target-cluster scratch table afterward. **Deliberately left the resulting `tasks`/`observations`/`memory_items` rows in the memory cluster rather than cleaning them up like a smoke test would** — this was a real message processed by the real production system, and having the memory cluster record it is the system doing exactly what it exists to do, not test debris to tidy away.
 
 **2026-08-12 — Session 38 · `cdk deploy EngramAgentStack` actually run — the agent is live in real AWS, confirmed running end to end via the console, not just a green CloudFormation checkmark.** User gave explicit go-ahead first, the same standing rule this project has applied to every consequential/billable AWS action since Sessions 31/32. `cdk deploy EngramAgentStack --require-approval never` (under `engram-deploy`) succeeded on the first attempt: 32/32 resources, about 185 seconds — the dedicated `nat_gateways=0` VPC, the FIFO `engram-commands` queue plus its DLQ, the ECS cluster/task definition/service, both IAM roles and their policies, and the disabled sweep rule. The `AWS::ECS::Service` resource itself reaching `CREATE_COMPLETE` was a real, meaningful signal on its own, not just "nothing errored": the `circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True)` added last session specifically watches for a task that keeps failing to start healthy and would have rolled the whole stack back rather than letting it reach this state. **Immediately hit a real, expected-shape limitation trying to verify further**: `engram-deploy` can create and deploy ECS and CloudWatch Logs resources but has no matching READ grant on either — `ecs:ListTasks`/`DescribeTasks` and `logs:DescribeLogStreams`/`GetLogEvents` both came back `AccessDenied`. The existing `LambdaLogsRead` statement from Session 33 only ever covered `/aws/lambda/engram-*`, never anticipating an ECS log group, and nothing in `EngramCdkDeploy` had ever granted ECS describe actions at all. Rather than widening the policy a further time this session, handed the user a detailed, exact console walkthrough instead — ECS cluster → service → task → health status, then CloudWatch → the real log group → the real log stream — and asked them to check directly rather than assuming. **User confirmed directly, and it was a full, real pass**: the task is `RUNNING`/`HEALTHY`, and the actual startup log sequence is all present — `startup check: DB reachable`, `startup check: Cohere embeddings reachable, 1024-dim confirmed`, `startup check: Ollama Cloud reachable`, `startup check: lease acquire/release round-trip OK`, `startup self-tests passed`, and `health endpoint listening on 0.0.0.0:8080` — meaning the deployed task genuinely reached the real memory cluster, Cohere, and Ollama Cloud, and performed a real lease acquire/release round-trip against CockroachDB, all from inside a real Fargate task in AWS, not simulated, not assumed. **This closes the full `agent/main.py` arc that spanned three sessions**: Session 35 built the module and live-verified `process_message()` directly; Session 36 wrote all the SQS/EventBridge/ECS infra and got `cdk synth` clean without deploying anything; Session 37 closed every deploy prerequisite (ECR repo, secret, a new scoped `engram-ecr-push` identity, GitHub secrets, a real pushed image) without deploying; this session actually deployed it and had the result independently confirmed. **Two things stated as still genuinely open, not quietly closed over:** the `engram-deploy` ECS/Logs read-access gap above remains unresolved (deferred rather than widened a third time this session); and the task role's real `cloudwatch:PutMetricData` grant, while now deployed for real, has not yet been exercised by the live task — no message has reached the (currently idle) real queue yet, so `telemetry.record_metric()` has never actually run from inside this deployed container. The next real step is sending one message to the live queue to prove `consume_loop()` itself and this metric path together, for the first time, end to end.
 
