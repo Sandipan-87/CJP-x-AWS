@@ -1,10 +1,70 @@
-# Engram infra — the dashboard-facing API Gateway (approvals + metrics + webhooks)
+# Engram infra — dashboard API Gateway + the agent's SQS/EventBridge/ECS
 
-[PLUMBER]. `design/02-low-level-design.md` §11.2 / HLD §5.6. One stack, `EngramApprovalsStack`
-(Python class `EngramApiStack` — renamed once scope grew past just approvals; the CloudFormation
-stack id is unchanged, so `cdk deploy` updates the same deployed stack rather than replacing it).
+[PLUMBER]. Two independent CDK stacks in this app now (`infra/app.py`):
+
+- **`EngramApprovalsStack`** (Python class `EngramApiStack`) — `design/02-low-level-design.md`
+  §11.2 / HLD §5.6, the dashboard-facing API Gateway (approvals + metrics + webhooks). **DEPLOYED
+  LIVE** — see its own section below.
+- **`EngramAgentStack`** (Python class `EngramAgentStack`,
+  `infra/engram_infra/agent_stack.py`) — the SQS queue, EventBridge sweep rule, and ECS Fargate
+  service that actually run `agent/main.py`. **Built + `cdk synth` clean, NOT yet deployed** — see
+  its own section below for exactly what's real vs. still needed before `cdk deploy`.
+
 The lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`) named in the LLD's
-directory tree are still NOT built, out of scope so far.
+directory tree are still NOT built, out of scope so far for either stack.
+
+## `EngramAgentStack` — SQS + EventBridge + ECS Fargate for `agent/main.py`
+
+Full design rationale lives in `infra/engram_infra/agent_stack.py`'s own module docstring
+(networking choices, why no ALB, why the sweep rule is disabled) — this section covers only the
+deploy sequence and what's still needed.
+
+**Real constraint this stack is built around**: no Docker in this dev environment (same one
+`infra/build.py` already worked around for the Lambda workers), and `agent/`'s dependencies
+(`psycopg[binary]`, transitively `numpy`/`psycopg2-binary`/`greenlet`) can't use that workaround's
+pure-Python trick. So this stack does not build an image itself — it imports one from ECR by tag.
+
+**Deploy order (NOT yet executed — asking before any of this touches real AWS, per this
+project's own standing rule for consequential/billable actions):**
+
+1. `python scripts/bootstrap_agent_infra.py` (under `engram-deploy` credentials) — creates the
+   `engram-agent` ECR repository and the `engram/agent-secrets` Secrets Manager secret (one JSON
+   blob: `ENGRAM_MEMORY_DSN`, `ENGRAM_TARGET_PROBE_DSN`, `ENGRAM_TARGET_OPERATOR_DSN`,
+   `ENGRAM_TARGET_DSN`, `COHERE_API_KEY`, `OLLAMA_API_KEY`, `CCLOUD_TOKEN`, pulled from local
+   `.env`). Expected to fail under `engram-phase0` (S3-only by design), same as every prior
+   Secrets Manager gap in this project.
+2. Add two NEW GitHub Actions repo secrets — `ENGRAM_ECR_PUSH_AWS_ACCESS_KEY_ID` /
+   `ENGRAM_ECR_PUSH_AWS_SECRET_ACCESS_KEY` — for a NEW, narrowly-scoped IAM identity (NOT
+   `engram-deploy`: a CI credential pushing one image doesn't need CDK's broader deploy surface).
+   Minimum policy: `ecr:GetAuthorizationToken` (`Resource: "*"`, the same kind of no-ARN-scoping
+   limitation CloudWatch's metrics actions already have) plus
+   `ecr:BatchCheckLayerAvailability`/`PutImage`/`InitiateLayerUpload`/`UploadLayerPart`/
+   `CompleteLayerUpload`/`BatchGetImage` scoped to the `engram-agent` repository ARN from step 1.
+3. Run `.github/workflows/build-agent-image.yml` (`workflow_dispatch`) — builds & pushes the
+   image, tagged `latest` and by git sha, into the repo from step 1.
+4. `cdk deploy EngramAgentStack` (from this directory, `engram-deploy` credentials) — creates a
+   dedicated `nat_gateways=0` VPC, the FIFO `engram-commands` queue + DLQ, an ECS cluster/
+   service/task definition pulling the image from step 3, and a DISABLED 5-minute EventBridge
+   sweep rule (see the stack's own docstring for why disabled: no sweep enumerator exists yet).
+
+**`cdk synth EngramAgentStack` needs no AWS credentials** (confirmed — a fresh, dedicated VPC is
+created rather than looking up the account's default one, keeping this stack's synth-time
+property identical to `EngramApprovalsStack`'s). **A real ordering bug was caught by `cdk synth`
+itself on the first attempt**, not assumed correct: granting the Secrets Manager read to
+`task_definition.execution_role` before calling `add_container()` failed with a `jsii`
+null-deserialization error, because `FargateTaskDefinition` only lazily creates an execution role
+once something (the ECR image + log driver) actually needs one. Fixed by moving that grant after
+`add_container()`.
+
+**What's real vs. still needed, stated plainly:** the CDK stack, the Dockerfile, and the GitHub
+Actions build workflow are all written and `cdk synth`-verified; nothing has been deployed. The
+5-minute EventBridge sweep rule, even once deployed, stays `enabled=False` until a real sweep
+enumerator exists (LLD §5.1 step 1's still-unimplemented MCP/CloudWatch/ccloud collection legs) —
+manually publishing a real message to the queue, or invoking `agent/main.py`'s `process_message()`
+directly (as `scripts/smoke_test_main.py` already does, live), remains the only proven way to
+exercise the agent today.
+
+---
 
 **DEPLOYED LIVE.** All three routes verified against the real deployed infrastructure:
 

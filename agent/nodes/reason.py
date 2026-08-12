@@ -27,11 +27,23 @@ design/02-low-level-design.md §5.3. Steps 1, 2, 4, 5 — SCOPED, stated up fron
   `<mm:think>` stripping happens inside `OllamaCloudLLM.complete()` itself
   (defense-in-depth, not primary-path — see that module's docstring);
   audit rationale is `Proposal.reasoning`, validated below.
+
+  Telemetry (§5.3 step 6: `llm_latency_ms`, `llm_token_usage`, `llm_failures`)
+  is now wired via the additive `telemetry: Telemetry | None = None` param
+  (`agent/telemetry.py`) — `None` (unpassed) is identical to prior behavior.
+  All three are per-`llm.complete()`-call, not per-node-call: a round that
+  gets rejected (bad schema, falsification mismatch) still made a real LLM
+  call with real latency/tokens, and `llm_failures` fires once per rejected
+  round, not just on final exhaustion. `llm_token_usage` sums whatever
+  numeric fields `LLMResult.usage` actually carries (provider-specific,
+  "may be empty" per that field's own docstring) — `OllamaCloudLLM` today
+  supplies `eval_count`/`prompt_eval_count`.
 """
 
 from __future__ import annotations
 
 import os
+import time
 
 from pydantic import ValidationError
 
@@ -40,6 +52,7 @@ from agent.memory.db import Database
 from agent.providers.base import LLMProvider
 from agent.schemas import Citation, Evidence, Proposal
 from agent.state import AgentState, Observation, RecallBundle
+from agent.telemetry import Telemetry, elapsed_ms, maybe_record, maybe_span, set_attr
 
 MAX_ROUNDS = 3  # LLD §5.3 step 3's "rounds < 3" — see module docstring on merging bounds
 
@@ -151,6 +164,7 @@ async def reason(
     llm: LLMProvider,
     *,
     max_rounds: int = MAX_ROUNDS,
+    telemetry: Telemetry | None = None,
 ) -> dict:
     """Returns a partial `AgentState` update: `{"proposal": ..., "phase": "reason"}`.
 
@@ -158,6 +172,7 @@ async def reason(
     falsification-consistent proposal emerges within `max_rounds` — this
     function does not silently guess at a malformed or contradicted proposal.
     """
+    model_id = os.environ.get("ENGRAM_LLM_MODEL", "minimax-m3:cloud")
     observation = state["observations"][-1] if state.get("observations") else None
     context = _build_context_message(state)
     messages: list[dict] = [{"role": "user", "content": context}]
@@ -165,52 +180,68 @@ async def reason(
 
     proposal: Proposal | None = None
     last_error: str | None = None
+    rounds_used = 0
 
-    for _round in range(1, max_rounds + 1):
-        if last_error:
-            messages.append({
-                "role": "user",
-                "content": f"Your previous proposal was rejected: {last_error}. "
-                            f"Revise and call propose_remediation again.",
-            })
+    with maybe_span(telemetry, "reason", task_id=state.get("task_id"), scope_id=state["scope_id"], model_id=model_id) as span:
+        for _round in range(1, max_rounds + 1):
+            rounds_used = _round
+            if last_error:
+                messages.append({
+                    "role": "user",
+                    "content": f"Your previous proposal was rejected: {last_error}. "
+                                f"Revise and call propose_remediation again.",
+                })
 
-        result = await llm.complete(SYSTEM_PROMPT, messages, [PROPOSE_REMEDIATION_TOOL])
-        if not result.tool_calls:
-            last_error = f"no tool call returned; model answered in prose: {result.text[:200]!r}"
-            continue
+            call_t0 = time.perf_counter()
+            result = await llm.complete(SYSTEM_PROMPT, messages, [PROPOSE_REMEDIATION_TOOL])
+            call_latency_ms = elapsed_ms(call_t0)
+            await maybe_record(telemetry, "llm_latency_ms", call_latency_ms, dimensions={"model_id": model_id})
+            token_usage = sum(v for v in result.usage.values() if isinstance(v, (int, float)))
+            if token_usage:
+                await maybe_record(telemetry, "llm_token_usage", token_usage, dimensions={"model_id": model_id})
 
-        args = result.tool_calls[0].get("arguments") or {}
-        proposed_columns = (args.get("parameters") or {}).get("columns", [])
-        evidence = _compute_falsification(observation, proposed_columns)
+            if not result.tool_calls:
+                last_error = f"no tool call returned; model answered in prose: {result.text[:200]!r}"
+                await maybe_record(telemetry, "llm_failures", 1.0, dimensions={"model_id": model_id})
+                continue
 
-        candidate = {
-            **args,
-            "falsification": [evidence.model_dump()],
-            "citations": [c.model_dump() for c in citations],
-        }
-        try:
-            validated = Proposal.model_validate(candidate)
-        except ValidationError as exc:
-            last_error = f"schema validation failed: {exc}"
-            continue
+            args = result.tool_calls[0].get("arguments") or {}
+            proposed_columns = (args.get("parameters") or {}).get("columns", [])
+            evidence = _compute_falsification(observation, proposed_columns)
 
-        if evidence.index_recommendation_match is False:
-            last_error = evidence.result_summary
-            continue
+            candidate = {
+                **args,
+                "falsification": [evidence.model_dump()],
+                "citations": [c.model_dump() for c in citations],
+            }
+            try:
+                validated = Proposal.model_validate(candidate)
+            except ValidationError as exc:
+                last_error = f"schema validation failed: {exc}"
+                await maybe_record(telemetry, "llm_failures", 1.0, dimensions={"model_id": model_id})
+                continue
 
-        proposal = validated
-        break
+            if evidence.index_recommendation_match is False:
+                last_error = evidence.result_summary
+                await maybe_record(telemetry, "llm_failures", 1.0, dimensions={"model_id": model_id})
+                continue
 
-    if proposal is None:
-        raise LLMSchemaError(last_error or "exhausted rounds with no valid proposal")
+            proposal = validated
+            break
 
-    await db.insert_decision(
-        state["task_id"],
-        state["scope_id"],
-        "reason",
-        model_id=os.environ.get("ENGRAM_LLM_MODEL", "minimax-m3:cloud"),
-        reasoning=proposal.model_dump(mode="json"),
-        citations=[c.model_dump() for c in proposal.citations],
-    )
+        set_attr(span, "rounds_used", rounds_used)
+        set_attr(span, "outcome", "success" if proposal is not None else "failure")
+
+        if proposal is None:
+            raise LLMSchemaError(last_error or "exhausted rounds with no valid proposal")
+
+        await db.insert_decision(
+            state["task_id"],
+            state["scope_id"],
+            "reason",
+            model_id=model_id,
+            reasoning=proposal.model_dump(mode="json"),
+            citations=[c.model_dump() for c in proposal.citations],
+        )
 
     return {"proposal": proposal.model_dump(mode="json"), "phase": "reason"}

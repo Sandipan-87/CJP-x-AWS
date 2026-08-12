@@ -52,6 +52,12 @@ isn't checkpointing — every node writes to CockroachDB directly regardless.
 Kill-and-resume already lives entirely in `agent/memory/leases.py`, proven
 in `scripts/smoke_test_leases.py`; LangGraph-level checkpointing is a
 second, additive layer on top of that, not a replacement for it.
+
+TELEMETRY now wired the same additive way: `build_graph()` takes an optional
+`telemetry: Telemetry | None` (`agent/telemetry.py`), passed straight through
+to every node's own `telemetry=` param. `None` (the default) compiles and
+runs exactly as before every node's telemetry wiring landed — no existing
+caller or test needed to change.
 """
 
 from __future__ import annotations
@@ -72,6 +78,7 @@ from agent.nodes.reason import reason as reason_fn
 from agent.nodes.recall import recall as recall_fn
 from agent.providers.base import EmbeddingProvider, LLMProvider
 from agent.state import AgentState
+from agent.telemetry import Telemetry
 from agent.tools.cloud_api import DEFAULT_WINDOW_HOURS, CloudApiAdapter
 from agent.tools.sql_operator import SqlOperator
 from agent.tools.sql_probe import SqlProbe
@@ -105,6 +112,7 @@ def build_graph(
     gate_poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     gate_timeout_s: float = DEFAULT_TIMEOUT_S,
     backup_window_hours: float = DEFAULT_WINDOW_HOURS,
+    telemetry: Telemetry | None = None,
 ) -> CompiledStateGraph:
     """Returns a compiled, invocable LangGraph app.
 
@@ -134,18 +142,20 @@ def build_graph(
         return await observe_fn(
             state, db, embed_provider, ProbeResult(**probe),
             scope_id=state["scope_id"], trigger=state.get("trigger", "manual"),
+            telemetry=telemetry,
         )
 
     async def _recall(state: AgentState) -> dict[str, Any]:
-        return await recall_fn(state, db, embed_provider)
+        return await recall_fn(state, db, embed_provider, telemetry=telemetry)
 
     async def _reason(state: AgentState) -> dict[str, Any]:
-        return await reason_fn(state, db, llm)
+        return await reason_fn(state, db, llm, telemetry=telemetry)
 
     async def _gate(state: AgentState) -> dict[str, Any]:
         return await gate_fn(
             state, db, sql_probe=sql_probe,
             poll_interval_s=gate_poll_interval_s, timeout_s=gate_timeout_s,
+            telemetry=telemetry,
         )
 
     async def _act_measure(state: AgentState) -> dict[str, Any]:
@@ -153,6 +163,7 @@ def build_graph(
             state, db, sql_probe, sql_operator,
             backup_gate=backup_gate, backup_window_hours=backup_window_hours,
             override_backup_gate=override_backup_gate,
+            telemetry=telemetry,
         )
 
     graph = StateGraph(AgentState)

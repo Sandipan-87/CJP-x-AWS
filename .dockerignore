@@ -1,0 +1,21 @@
+# Engram · keeps the build context small and (critically) never sends real
+# secrets to the Docker daemon/build cache.
+.env
+.env.*
+!.env.example
+.git
+.venv
+__pycache__
+*.pyc
+node_modules
+dashboard
+infra
+scripts
+tests
+docs
+research
+design
+db
+scenarios
+fixtures
+*.md

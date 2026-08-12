@@ -1,0 +1,57 @@
+name: Build and Push Agent Image
+
+# Engram · builds agent/main.py's container image and pushes it to the ECR
+# repository `infra/engram_infra/agent_stack.py` imports by name (never creates --
+# see scripts/bootstrap_agent_infra.py, the same "CDK imports, a script provisions"
+# split already used for Secrets Manager secrets in this project). GitHub-hosted
+# runners have Docker; this project's own dev environment does not (Dockerfile's
+# own header comment) -- same class of local-environment workaround as
+# db-migrate.yml/db-smoke-test.yml routing around the local squid block.
+#
+# Manual trigger only (workflow_dispatch), matching this repo's other two
+# workflows: pushing a new agent image is a deliberate release action, not
+# something that should fire on every commit before this project has a staging
+# environment to land untested images in.
+#
+# Needs two NEW repo secrets this session could not add -- no CI credential
+# should ever hold `engram-deploy`'s broader IAM policy just to push one ECR
+# image, so this uses its own scoped user/policy instead:
+#   ENGRAM_ECR_PUSH_AWS_ACCESS_KEY_ID / ENGRAM_ECR_PUSH_AWS_SECRET_ACCESS_KEY
+# Minimum IAM policy for that identity: ecr:GetAuthorizationToken (Resource "*",
+# the same genuine no-ARN-scoping limitation CloudWatch's GetMetricData/ListMetrics
+# already has, per infra/engram_infra/approvals_stack.py's own comment) plus
+# ecr:BatchCheckLayerAvailability/PutImage/InitiateLayerUpload/UploadLayerPart/
+# CompleteLayerUpload/BatchGetImage scoped to the one `engram-agent` repository ARN.
+
+on:
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: engram-agent
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.ENGRAM_ECR_PUSH_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.ENGRAM_ECR_PUSH_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push (tags: git sha + latest)
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -e
+          docker build -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" -t "$REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+          echo "Pushed $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"

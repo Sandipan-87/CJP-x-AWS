@@ -151,6 +151,14 @@ class Database:
     async def close(self) -> None:
         await self._pool.close()
 
+    async def ping(self) -> None:
+        """`SELECT 1` — LLD §2's "DB reachable" startup self-test and §12's
+        `GET /health` both just need to know the pool can round-trip a
+        query; raises on failure (via `_read`'s own retry-once-then-raise),
+        never returns a bool a caller could forget to check.
+        """
+        await self._read("SELECT 1")
+
     @asynccontextmanager
     async def _write_cursor(self) -> AsyncIterator[psycopg.AsyncCursor]:
         """One connection, one transaction, autocommit off — writes are never
@@ -235,6 +243,20 @@ class Database:
             await cur.execute(
                 "UPDATE tasks SET status = %s, updated_at = now() WHERE task_id = %s",
                 (status, task_id),
+            )
+
+    async def set_checkpoint_thread_id(self, task_id: str, thread_id: str) -> None:
+        """Closes the gap `agent/graph.py`'s own module docstring names since
+        Session 27: nothing wrote `tasks.checkpoint_thread_id` before
+        `agent/main.py` existed to call this. See `main.py`'s module
+        docstring for how `thread_id` is derived (deterministically, from
+        the incident fingerprint) so this write can happen once, before the
+        graph even runs, rather than reconciled after the fact.
+        """
+        async with self._write_cursor() as cur:
+            await cur.execute(
+                "UPDATE tasks SET checkpoint_thread_id = %s, updated_at = now() WHERE task_id = %s",
+                (thread_id, task_id),
             )
 
     # ------------------------------------------------------ observations / entities

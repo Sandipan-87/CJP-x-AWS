@@ -11,3 +11,10 @@ langchain-cockroachdb>=0.3.0 # scripts/bootstrap_checkpointer.py, agent/graph.py
                               # psycopg2-binary/greenlet were already satisfied by other installed
                               # packages on this machine) -- heavier than this repo's otherwise-lean
                               # psycopg3-only stack, but it's the LLD-named checkpointer, not optional.
+boto3>=1.35.0                 # agent/telemetry.py — CloudWatch PutMetricData. NOT in workers/requirements.txt
+                              # on purpose (Lambda's runtime provides boto3 natively); agent/ runs on ECS
+                              # Fargate, a plain container image, so this is the first agent/-side module
+                              # that actually needs it declared. S3-only per CLAUDE.md §2.1 -- still true,
+                              # cloudwatch is the same boto3 package, not a new AWS-service dependency choice.
+opentelemetry-sdk>=1.27.0    # agent/telemetry.py — real (exportable) spans; opentelemetry-api alone
+                              # (already a transitive dep) only gives the bare API's no-op tracer.

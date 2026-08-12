@@ -19,19 +19,27 @@ design/02-low-level-design.md §5.1. Steps 2–4 only, stated up front:
      the write-path embedding (Cohere `search_document`, D9 cache) into
      `memory_items(class='query_fingerprint')`, invariant #2.
 
-Telemetry (step 5) and the MCP-timeout degrade path (step 6) are also out
-of scope — no telemetry sink and no MCP adapter exist yet either.
+Telemetry (step 5) is now wired — `agent/telemetry.py` exists — via the same
+additive `telemetry: Telemetry | None = None` param `agent/graph.py`'s
+`checkpointer` established: `None` (unpassed) makes this identical to every
+prior session's behavior. Emits `sweep_cycle_ms` (dims `scope_id`) on every
+call; `observations_written` (step 5's other named metric) isn't in LLD
+§12's own dashboard table, so it's a span attribute only, not a CloudWatch
+metric — see `agent/telemetry.py`'s module docstring. The MCP-timeout
+degrade path (step 6) is still out of scope — no MCP adapter exists yet.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+import time
 
 from agent.memory.db import Database
 from agent.memory.embeddings import embed_and_cache
 from agent.providers.base import EmbeddingProvider
 from agent.state import AgentState, Observation
+from agent.telemetry import Telemetry, elapsed_ms, maybe_record, maybe_span, set_attr
 from agent.tools.sql_probe import ExplainResult
 
 DEFAULT_LATENCY_THRESHOLD_MS = 1000.0  # §5.1 step 3's "threshold" — tunable, not measured yet
@@ -109,6 +117,7 @@ async def observe(
     scope_id: str,
     trigger: str = "manual",
     latency_threshold_ms: float = DEFAULT_LATENCY_THRESHOLD_MS,
+    telemetry: Telemetry | None = None,
 ) -> dict:
     """Returns a partial `AgentState` update: `task_id`, `scope_id`,
     `target_cluster_id`, `trigger`, `phase`, `observations` (appended),
@@ -119,58 +128,70 @@ async def observe(
     task exists) and otherwise only provides continuity across calls; a
     fresh call with `state["observations"] == []` is a normal first probe.
     """
-    normalized = normalize_query_text(probe["query_text"])
-    fp = fingerprint(normalized)
-    incident = is_anomaly(probe, latency_threshold_ms=latency_threshold_ms)
-    task_type = "incident" if incident else "sweep"
+    t0 = time.perf_counter()
+    with maybe_span(telemetry, "observe", scope_id=scope_id, trigger=trigger) as span:
+        normalized = normalize_query_text(probe["query_text"])
+        fp = fingerprint(normalized)
+        incident = is_anomaly(probe, latency_threshold_ms=latency_threshold_ms)
+        task_type = "incident" if incident else "sweep"
 
-    task_id, observation_id, entity_id = await db.insert_incident_observation(
-        scope_id,
-        task_type,
-        trigger,
-        target_cluster_id=probe["target_cluster_id"],
-        incident_fingerprint=fp if incident else None,
-        source="sql_probe",
-        kind="query_stats",
-        payload={
-            "text": normalized,
-            "raw_text": probe["query_text"],  # runnable SQL -- normalized "text" has literals
-                                               # stripped to '?' for fingerprinting/embedding and
-                                               # is NOT valid SQL; act_measure(node) needs THIS for
-                                               # its own before/after EXPLAIN ANALYZE measurement
-            "latency_ms": probe["probe_latency_ms"],
-            "plan_has_seq_scan": probe["plan_has_seq_scan"],
-            "index_candidate": probe.get("index_candidate"),
-        },
-        entity_kind="table",
-        entity_name=probe["table_name"],
-    )
+        task_id, observation_id, entity_id = await db.insert_incident_observation(
+            scope_id,
+            task_type,
+            trigger,
+            target_cluster_id=probe["target_cluster_id"],
+            incident_fingerprint=fp if incident else None,
+            source="sql_probe",
+            kind="query_stats",
+            payload={
+                "text": normalized,
+                "raw_text": probe["query_text"],  # runnable SQL -- normalized "text" has literals
+                                                   # stripped to '?' for fingerprinting/embedding and
+                                                   # is NOT valid SQL; act_measure(node) needs THIS for
+                                                   # its own before/after EXPLAIN ANALYZE measurement
+                "latency_ms": probe["probe_latency_ms"],
+                "plan_has_seq_scan": probe["plan_has_seq_scan"],
+                "index_candidate": probe.get("index_candidate"),
+            },
+            entity_kind="table",
+            entity_name=probe["table_name"],
+        )
+        set_attr(span, "task_id", task_id)
 
-    # Write-path embedding (LLD §5.1 step 4, invariant #2): search_document,
-    # cache-aware (D9) — a repeat fingerprint across sweeps never re-embeds.
-    vectors = await embed_and_cache(db, embed_provider, [normalized], "search_document")
-    await db.insert_memory_item(
-        scope_id,
-        "query_fingerprint",
-        normalized,
-        embedding=vectors[0],
-        entity_id=entity_id,
-        provenance={"task_id": task_id, "observation_id": observation_id},
-    )
+        # Write-path embedding (LLD §5.1 step 4, invariant #2): search_document,
+        # cache-aware (D9) — a repeat fingerprint across sweeps never re-embeds.
+        vectors = await embed_and_cache(db, embed_provider, [normalized], "search_document")
+        await db.insert_memory_item(
+            scope_id,
+            "query_fingerprint",
+            normalized,
+            embedding=vectors[0],
+            entity_id=entity_id,
+            provenance={"task_id": task_id, "observation_id": observation_id},
+        )
 
-    observation: Observation = {
-        "source": "sql_probe",
-        "kind": "query_stats",
-        "fingerprint": fp,
-        "entity_ids": [entity_id],
-        "payload": {
-            "text": normalized,
-            "raw_text": probe["query_text"],  # see the identical field above -- act_measure needs this
-            "latency_ms": probe["probe_latency_ms"],
-            "plan_has_seq_scan": probe["plan_has_seq_scan"],
-            "index_candidate": probe.get("index_candidate"),
-        },
-    }
+        observation: Observation = {
+            "source": "sql_probe",
+            "kind": "query_stats",
+            "fingerprint": fp,
+            "entity_ids": [entity_id],
+            "payload": {
+                "text": normalized,
+                "raw_text": probe["query_text"],  # see the identical field above -- act_measure needs this
+                "latency_ms": probe["probe_latency_ms"],
+                "plan_has_seq_scan": probe["plan_has_seq_scan"],
+                "index_candidate": probe.get("index_candidate"),
+            },
+        }
+
+        latency_ms = elapsed_ms(t0)
+        set_attr(span, "latency_ms", latency_ms)
+        set_attr(span, "outcome", "incident" if incident else "sweep")
+        # observations_written isn't in LLD §12's dashboard table -- span attribute only,
+        # see module docstring.
+        set_attr(span, "observations_written", 1)
+
+    await maybe_record(telemetry, "sweep_cycle_ms", latency_ms, dimensions={"scope_id": scope_id})
 
     return {
         "task_id": task_id,
