@@ -976,6 +976,111 @@ DONE (Phase 3, chunk 14)  **A real INCIDENT-shaped message was sent to the
       recall hit / faster second pass) and an `aws ecs stop-task`
       mid-remediation kill-and-resume, neither attempted this session.
 
+DONE (Phase 3, chunk 16)  **Checkpoint-resume now actually skips re-completed
+      nodes on redelivery, 2026-08-13 -- closes the #1 item on this file's
+      own Next-action list, left open since Session 41 found that kill-and-
+      resume was CORRECT but not EFFICIENT (a redelivered incident always
+      replayed the whole graph from `observe`, paying for a second real
+      Ollama call even though `reason` had already completed and
+      checkpointed before the kill).** `agent/memory/db.py` gained
+      `get_task_status()` (a plain read, no new invariant). `agent/main.py`
+      gained `_should_resume()`, called right after `insert_task()`'s
+      dedupe and BEFORE the status gets overwritten to `"running"`. It
+      requires BOTH conditions together, not either alone: (a) the dedupe
+      landed on a task whose status was ALREADY `"running"` -- meaning a
+      prior attempt started this exact task and never reached a terminal
+      status, i.e. it crashed mid-run; AND (b) a real LangGraph checkpoint
+      with actual progress exists for the thread (`checkpointer.aget_tuple
+      (config)`, `channel_versions` non-empty -- the same internal signal
+      `langgraph`'s own `_loop.py` uses for its `is_resuming` gate,
+      confirmed by reading the installed `langgraph==1.2.10` source before
+      writing this, not assumed from docs). **Checking (a) alone is
+      provably wrong for a real case this codebase already exercises**:
+      `thread_id` is derived purely from the query's fingerprint, so a
+      genuinely NEW occurrence of a previously-COMPLETED incident (the "it
+      remembers" recall-hit path, Session 41) shares that same `thread_id`
+      and its checkpoint history, but gets a brand-new `task_id` (the
+      dedupe SELECT only matches non-terminal statuses) -- checking
+      checkpoint-existence alone would have wrongly tried to resume a
+      finished, no-op checkpoint for that case instead of running the full
+      graph. **Checking (b) alone is also wrong**: a process could die
+      after writing `status='running'` but before ever calling `ainvoke`
+      once, leaving no checkpoint at all -- `ainvoke(None, ...)` in that
+      case doesn't fail loudly (LangGraph's own gate just treats it as
+      nothing to do), so status alone would silently produce an empty run
+      instead of the real incident being processed. `Runtime` gained a
+      `checkpointer` field (`None` default, so every pre-existing caller/
+      test is unaffected) purely so `process_message()` can ask this one
+      question -- the graph itself already had the checkpointer since
+      Session 27/35. **9 new unit tests** in `tests/test_main.py` (13 total,
+      up from 9) using a hand-rolled `_FakeCheckpointer` and an extended
+      `_FakeDb` that can simulate a dedupe hit landing on an already-
+      `running` task -- covering the resume case, the not-'running' case,
+      the no-checkpoint-progress race case, and the no-checkpointer
+      backward-compatibility case. **166 Python unit tests pass in this dev
+      environment** (up from 162, excluding the 3 pre-existing pg8000-
+      dependent `workers/` files this venv still can't collect). **Live-
+      verified end to end against the real memory/target clusters, real
+      Cohere, and real Ollama Cloud -- no AWS/ECS redeploy needed, since
+      `_should_resume` is exercised the same way a real container kill
+      would leave it: a real cancelled `graph.ainvoke()`, a real DB task row
+      stuck at `status='running'`, a real checkpoint with real progress.**
+      New `scripts/smoke_test_resume.py`: 17/17 on the clean run, with two
+      real, informative failures on the way there, both understood and
+      fixed, neither smoothed over. First: the LLM-call counter read 0 even
+      after a real Ollama call had clearly happened (visible in the
+      `reason` decision row and the OTel span) -- `agent/graph.py`'s own
+      module docstring already says why: "every dependency is bound via
+      closures over its node," meaning `build_graph()` closes over the
+      `llm` object at COMPILE time inside `build_runtime()`, so re-pointing
+      `runtime.llm` at a wrapper AFTERWARD is invisible to the already-
+      compiled graph. Fixed by monkeypatching the `complete` method
+      in-place on the real instance instead of swapping which object
+      `runtime.llm` refers to -- visible everywhere since every caller
+      resolves `.complete` on that one shared object at call time. Second,
+      the concurrent approval poller (mirroring `smoke_test_main.py`'s own
+      `_approve_when_ready`) queried `remediation_actions` scoped only by
+      `target_cluster_id` -- this project's shared sandbox target cluster
+      has accumulated real `remediation_actions` rows from every prior live
+      smoke test across many sessions (deliberately left in place, per this
+      project's own "real system doing its real job" convention), so an
+      unscoped query picked up a stale HISTORICAL action instead of this
+      run's actual pending one, and the real new approval sat un-decided
+      until it genuinely expired (`gate_wait_ms=64472`, `outcome='expired'`
+      -- a real, measured timeout, not a hang). Fixed by scoping both the
+      poller and this script's own assertions by `task_id` instead.
+      **Stated, not silently generalized: this same latent ambiguity likely
+      exists in `scripts/smoke_test_main.py`'s own `_approve_when_ready`
+      too** (identical unscoped query, same shared cluster) -- not fixed
+      here, since that script wasn't touched this session and the coding-
+      conduct rule is surgical changes, but flagged as a real follow-up any
+      future live run of that specific script should watch for. The clean
+      run's own trace incidentally shows the resumed run's `gate(node)`
+      picking up from a state where `reason` had already committed its
+      checkpoint but `gate` itself had only just started before the kill
+      landed (an artifact of exactly when `asyncio.Task.cancel()` takes
+      effect relative to the node's own await points) -- still fully
+      checkpoint-consistent and still proves the point: `reason` made
+      exactly one real Ollama call across BOTH invocations combined
+      (confirmed via the in-place-patched counter), each of `recall`/
+      `reason`/`gate`/`act` has exactly one `decisions` row total, exactly
+      one `observations` row (so `observe` didn't re-run either), the
+      episode completed with a real `CREATE INDEX` confirmed via `SHOW
+      INDEXES`, exactly one `remediation_actions` row (`outcome='success'`,
+      no duplicate from the two invocations), and a clean lease release (0
+      `agent_leases` rows). Test scratch data (scenario table, `tasks` row
+      cascading to `decisions`/`remediation_actions`/`observations`/
+      `approvals` via the schema's own `ON DELETE CASCADE`, `checkpoints`
+      rows, `memory_items`, `embedding_cache` entries) was fully cleaned up
+      and confirmed removed. **This is a real efficiency fix, not a
+      correctness fix** -- DB-level idempotency (`tasks_active_incident_idx`,
+      `remediation_actions.idempotency_key`) was already the actual
+      exactly-once guarantee, proven independently in Session 41; this
+      change means a redelivered incident now also skips the wasted
+      re-execution cost (a second real LLM call, a second real recall
+      lookup) that Session 41 explicitly flagged as inefficient but not
+      incorrect.
+
 DONE (Phase 3, chunk 15)  **BOTH submission demo beats proven live, 2026-
       08-12 -- "it remembers" (a real recall hit + exactly-once dedup) and
       "it survives" (a real `aws ecs stop-task` mid-remediation, a real
@@ -1136,13 +1241,15 @@ BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       webhooks are all fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) make kill-and-resume actually SKIP re-completed nodes on redelivery -- pass `None` (not a fresh `_initial_state()`) to `graph.ainvoke()` when `process_message()` detects the pre-inserted task is already `status='running'` (meaning a prior attempt got partway through), so LangGraph's own checkpoint resume is what saves the repeat `recall`/`reason` work, not just DB-level idempotency papering over a full re-run; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (3) grant `cloudwatch:GetMetricData`/`ListMetrics` (Resource "*", same limitation as the ECS trio) so the real `PutMetricData` calls chunk 15 confirmed are firing can actually be confirmed landing, not just called; (4) a dashboard metrics panel consuming the now-live `GET /metrics`; (5) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (6) the `gate→reason` re-plan edge, once a loop-prevention design exists.
+**Next action, in order (Phase 3 continues):** (1) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (2) grant `cloudwatch:GetMetricData`/`ListMetrics` (Resource "*", same limitation as the ECS trio) so the real `PutMetricData` calls chunk 15 confirmed are firing can actually be confirmed landing, not just called; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists; (6) low-priority: `scripts/smoke_test_main.py`'s own `_approve_when_ready` scopes its poll by `target_cluster_id` only (chunk 16 found and fixed the same latent bug in a new script) -- the shared sandbox target cluster now has enough accumulated historical `remediation_actions` rows that a future run of that specific script could pick up a stale action and spuriously time out; scope it by `task_id` like chunk 16's script does, next time that file is touched.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-13 — Session 42 · Checkpoint-resume now actually skips re-completed nodes on redelivery — closes the #1 item on this file's own Next-action list, left open since Session 41 proved kill-and-resume was correct but not efficient.** `agent/memory/db.py` gained a small `get_task_status()` read. `agent/main.py` gained `_should_resume()`, called right after `insert_task()`'s dedupe and before the status gets overwritten to `"running"`: it resumes via `graph.ainvoke(None, config=config)` instead of a fresh `_initial_state()` only when BOTH (a) the dedupe landed on a task whose status was already `"running"` (a prior attempt crashed mid-run) AND (b) a real LangGraph checkpoint with actual progress exists for the thread (`channel_versions` non-empty, read directly from the installed `langgraph==1.2.10` source rather than assumed from docs — the same internal signal LangGraph's own `_loop.py` uses for its `is_resuming` gate). Neither condition alone is sufficient, and both failure modes are real, not hypothetical: status alone would wrongly try to resume a previously-COMPLETED incident that happens to share the same fingerprint-derived `thread_id` (the "it remembers" recall-hit path is exactly this case — a new `task_id`, an old, finished checkpoint on the same thread); checkpoint-existence alone would silently no-op on the narrow race where a process dies before ever calling `ainvoke` once. `Runtime` gained a `checkpointer` field (`None` default, fully backward compatible). 9 new unit tests in `tests/test_main.py` (13 total) cover all four cases (resume, not-running, no-checkpoint-progress race, no-checkpointer). 166 unit tests pass in this dev environment (up from 162). **Live-verified end to end with no AWS/ECS redeploy needed** — a real cancelled `graph.ainvoke()` against the real memory/target clusters leaves behind exactly what a real container kill would (a task stuck at `status='running'` with real checkpoint progress), which is all `_should_resume` needs to see. New `scripts/smoke_test_resume.py`: 17/17 on the clean run, after finding and fixing two real bugs in the TEST itself (not the fix): first, swapping `runtime.llm` after `build_runtime()` returned had no effect, because `agent/graph.py` closes over the `llm` object at graph-compile time — fixed by monkeypatching the `complete` method in place on the same shared instance instead. Second, the concurrent approval poller (same pattern as the existing `smoke_test_main.py`) queried `remediation_actions` scoped only by `target_cluster_id`, which this project's shared sandbox target cluster has now accumulated real historical rows for across many sessions — it picked up a stale action, the real new approval sat un-decided, and `gate(node)` genuinely (and correctly) expired waiting for it; fixed by scoping the poller and the script's own assertions by `task_id`. Flagged, not fixed: `smoke_test_main.py`'s own `_approve_when_ready` likely has this same latent scoping gap (see Next-action list, item 6) — not touched this session since that file wasn't otherwise part of this change. The clean run proved the actual point directly, not by inference: `reason` made exactly ONE real Ollama call across both invocations combined (confirmed via the in-place-patched call counter), every node's `decisions` row exists exactly once total, `observe` didn't re-run either (one `observations` row), and the episode still completed correctly — one real `CREATE INDEX` confirmed via `SHOW INDEXES`, one `remediation_actions` row (`outcome='success'`, no duplicate), lease cleanly released. Test scratch data was fully cleaned up (cascade-deleting `decisions`/`remediation_actions`/`observations`/`approvals` via the schema's own `ON DELETE CASCADE` on `tasks`, plus checkpoints/memory_items/embedding_cache) and confirmed removed. This is a real efficiency fix, not a correctness fix — Session 41 already proved the exactly-once guarantee holds at the DB layer regardless of what LangGraph itself skips; this closes the wasted-re-execution cost that session explicitly flagged as the remaining gap.
 
 **2026-08-12 — Session 41 · Both submission demo beats proven live — "it remembers" and "it survives" — plus a real, previously-latent production bug found and fixed along the way, not smoothed over.** The recall-hit test found the bug on its first attempt: a second incident against a scope that by then had a real `episode` memory item (`embedding=NULL`, seed-then-backfill by design) was correctly classified as an incident but ended `status='failed'` with zero `decisions` rows — meaning it crashed inside `recall(node)` before writing anything. Confirmed directly: `recall_ann()` itself doesn't error on a NULL embedding (CockroachDB's `<=>` against NULL just returns SQL NULL), but `agent/memory/scoring.py`'s `hybrid()` does `0.45 * similarity` unconditionally, and `0.45 * None` raises a plain `TypeError` — not an `EngramError`, so it surfaced as an opaque "failed" rather than a park. This bug had been latent since Session 14; nothing before this session had ever run a second real incident against a scope that already had a real episode row, in any smoke test or prior live run — proving "it remembers" is exactly what exercised this path for the first time. Fixed with `AND embedding IS NOT NULL` in `recall_ann()`'s WHERE clause (a NULL-embedding row can't be meaningfully ANN-ranked anyway) and added a live regression check to `scripts/smoke_test_recall.py` (13/13). This was the first real bug this project shipped to the live deployment and then had to patch and redeploy — genuinely new operational territory: committed the fix, rebuilt and repushed the image via `build-agent-image.yml`, then hit a third real IAM gap trying to roll it out (`engram-deploy` had no `ecs:UpdateService` at all). Rather than trickling through separate asks, requested one bundled grant covering both the redeploy and the upcoming kill-and-resume test: `UpdateService`/`DescribeServices` (worked scoped to the cluster/service ARNs) plus `ListTasks`/`DescribeTasks`/`StopTask`, which hit a fourth real AWS quirk — `ecs:ListTasks` checks a `container-instance` ARN internally no matter which filter you call it with, not the cluster/service/task ARNs you'd expect, the same class of limitation already on record here for CloudWatch's `GetMetricData`/`ListMetrics`. Fixed with `Resource: "*"` for those three actions specifically. Forced the redeploy and confirmed via `ecs:DescribeTasks` that the new task's container image digest matched the freshly-pushed one exactly — the first time this session could verify ECS state directly instead of asking the user to check the console. "It remembers," verified for real after the redeploy: a fresh incident against the same fingerprint produced a `decisions(node='recall')` row with 5 real citations (all `query_fingerprint`, similarity ~0.62) to memory written by earlier incidents against the same query shape. Even more informative than a plain approve-and-apply: `gate()`'s idempotency-key dedup recognized this exact remediation was already applied successfully in the prior session and reconciled onto the existing `remediation_actions` row instead of duplicating it or re-running the DDL — invariant #4's exactly-once guarantee, now caught working correctly *across* incidents, not just within one. "It survives," proven for real: sent a genuinely fresh incident (new scenario table, new fingerprint), waited for its real pending approval to appear without approving it, then stopped the currently-running ECS task for real. ECS started a replacement automatically within about 35 seconds (a confirmed different task ARN, `RUNNING`). Approved the pending approval only after the replacement was confirmed running — the original task never got to see that decision — and the new task picked up the redelivered SQS message and completed the interrupted work: `outcome='success'`, exactly one `remediation_actions` row for the whole episode, a real index confirmed via `SHOW INDEXES`, zero leftover `agent_leases` rows. One precise, honest mechanism finding rather than an overclaim: `observations` shows 2 rows and `decisions` shows `recall→reason→gate` ran once before the kill and `recall→reason→act` ran again after redelivery (no second `gate` decision, since its idempotency check found the by-then-approved row and skipped straight to `act`) — meaning recovery here is achieved by DB-level idempotency across a full graph re-run, not a true LangGraph checkpoint-resume that would have skipped the already-completed `observe`/`recall`/`reason` nodes; `process_message()` always builds a fresh initial state rather than passing `None` to actually resume from checkpoint. The checkpointer IS persisting real state throughout (12 real rows for this thread, confirmed) — it just isn't being used as an execution-skip optimization yet, a real, measurable inefficiency (a second real Ollama call for the same incident) worth closing next, not a correctness gap, since the exactly-once guarantee is enforced at the DB layer regardless of what LangGraph itself skips. Cleaned up both disposable target-cluster scratch tables afterward; left every resulting `tasks`/`observations`/`decisions`/`remediation_actions`/`approvals`/`checkpoints` row in the memory cluster, same reasoning as the two prior sessions' live tests — this is the real system doing its real job, not test debris.
 
