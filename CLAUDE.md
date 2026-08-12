@@ -779,8 +779,71 @@ DONE (Phase 3, chunk 11)  **The agent image is actually built and pushed to
       in 41s**, and the pushed `latest` tag was confirmed to actually exist
       in ECR afterward via a real `ecr:BatchGetImage` call under the new
       `engram-ecr-push` credentials (real digest returned) -- not assumed
-      from a green checkmark alone. **`cdk deploy` still deliberately NOT
-      run**, per the same standing rule restated every session this applies.
+      from a green checkmark alone.
+
+DONE (Phase 3, chunk 12)  **`cdk deploy EngramAgentStack` actually run,
+      2026-08-12 -- the agent is LIVE in real AWS, running the real
+      end-to-end loop against real infrastructure, user-confirmed via the
+      console, not just a green CloudFormation checkmark.** User gave
+      explicit go-ahead first, per this project's own standing rule for
+      every consequential/billable AWS action. `cdk deploy EngramAgentStack
+      --require-approval never` (under `engram-deploy`) succeeded first
+      try: 32/32 resources, ~185s -- VPC (2 public + 2 isolated subnets
+      across 2 AZs, `nat_gateways=0` as designed), the FIFO
+      `engram-commands` queue + DLQ, the ECS cluster/task definition/
+      service, both IAM roles + their policies, the disabled sweep rule.
+      **The `AWS::ECS::Service` resource itself reaching `CREATE_COMPLETE`
+      is a real, meaningful signal, not just "CloudFormation didn't
+      error"**: `circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=
+      True)` (added last chunk specifically for this) means a task that
+      kept failing to start healthy would have tripped a rollback of the
+      whole stack instead of reaching this state. **A real, immediate
+      limitation, surfaced and handed off rather than worked around:**
+      `engram-deploy` can create/deploy ECS+Logs resources but has no
+      matching READ grant on either (`ecs:ListTasks`/`DescribeTasks` and
+      `logs:DescribeLogStreams`/`GetLogEvents` both came back
+      `AccessDenied`) -- the existing `LambdaLogsRead` statement from
+      Session 33 only covers `/aws/lambda/engram-*`, not this new `/ecs/
+      engram-agent` log group, and nothing in `EngramCdkDeploy` ever
+      granted ECS describe actions at all. Rather than widening the policy
+      for a third time this session, handed the user a detailed, exact
+      console walkthrough instead (ECS cluster → service → task →
+      health status; CloudWatch → the real log group → the real log
+      stream) -- **user confirmed directly**: task `RUNNING`/`HEALTHY`,
+      and the real startup log sequence all present --
+      `startup check: DB reachable`, `startup check: Cohere embeddings
+      reachable, 1024-dim confirmed`, `startup check: Ollama Cloud
+      reachable`, `startup check: lease acquire/release round-trip OK`,
+      `startup self-tests passed`, `health endpoint listening on
+      0.0.0.0:8080` -- meaning the deployed task genuinely reached the
+      real memory cluster, Cohere, and Ollama Cloud, and performed a real
+      lease acquire/release round-trip against CockroachDB, all from
+      inside a real Fargate task, not simulated or assumed. **This is the
+      actual, final close of the `agent/main.py` arc that spanned Sessions
+      35 (built + `process_message()` live-verified directly), 36 (infra
+      written, `cdk synth` clean, nothing deployed), and 37 (image built +
+      pushed to ECR, every deploy prerequisite closed)** -- the agent now
+      runs as a real, standing ECS Fargate service, health-checked,
+      leased, checkpointed, and reachable, with a real (currently-idle,
+      since no message has been sent) SQS queue in front of it. The IAM
+      read-access gap above (`ecs:ListTasks`/`logs:DescribeLogStreams` for
+      `engram-deploy`) remains genuinely open, not silently closed --
+      revisit if this project needs to introspect the running task from
+      code/CI rather than the console again. **A small correction to
+      chunk 10's own claim, caught by this real deploy, not before**: `cdk
+      deploy` produced a real `infra/cdk.context.json`
+      (`availability-zones:account=...:region=us-east-1`) -- so
+      `ec2.Vpc(..., max_azs=2)` DOES perform a real AZ lookup once real
+      credentials are present; chunk 10's "`cdk synth` needs no AWS
+      credentials" claim was accurate for the specific *synth-only* runs
+      that session made (confirmed again just now: `cdk synth` with no
+      credentials set at all still works, falling back to the CDK CLI's
+      own dummy AZ list), but a real `cdk deploy` always needs real
+      credentials anyway, and now legitimately caches this lookup's
+      result. Committed `cdk.context.json` (no secrets in it, just AZ
+      names) specifically so a future `cdk diff`/`deploy` against this
+      already-deployed stack recomputes against the SAME AZ set, not a
+      fresh lookup that could in principle return a different order/set.
 
 OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       implemented -- `exactly_once_conflicts_detected` correctly stays
@@ -792,22 +855,24 @@ OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       list accordingly. Real CloudWatch publish is still unverified end-to-end: `engram-phase0`
       (the only credential in `.env`) is deliberately S3-only and
       correctly gets `AccessDenied` on `cloudwatch:PutMetricData`/
-      `ListMetrics` (confirmed live twice now -- Session 34's
-      `smoke_test_telemetry.py` and Session 35's `smoke_test_main.py`) --
-      the real fix is the new `EngramAgentStack` task role (see chunk 10
-      above), which has the grant already written but is not deployed yet;
-      widening `engram-phase0` itself would be the wrong identity to grant
-      it to. **The SQS queue, EventBridge rule, and ECS service/task-
-      definition are now fully DEFINED (`infra/engram_infra/agent_stack
-      .py`, `cdk synth` clean) and the real container image is now BUILT
-      AND PUSHED to ECR (chunk 11 -- `engram-agent:latest`, confirmed via a
-      real `ecr:BatchGetImage` call) but NOTHING IS DEPLOYED** -- the actual
-      `consume_loop()`/SQS transport and the ECS Fargate deployment remain
-      untested against real AWS until `cdk deploy EngramAgentStack` runs,
-      which needs only explicit user go-ahead at this point (every
-      prerequisite chunk 10 named -- the ECR-push identity, the two GitHub
-      secrets, a successful image build -- is now closed). The
-      lifecycle-worker Lambdas
+      `ListMetrics` under `engram-phase0` (confirmed live twice -- Session
+      34's `smoke_test_telemetry.py` and Session 35's `smoke_test_main.py`).
+      **The real fix -- the `EngramAgentStack` task role's own
+      `cloudwatch:PutMetricData` grant -- is now actually deployed** (chunk
+      12), but has not yet been EXERCISED by the live task: `telemetry
+      .record_metric()` only runs inside `process_message()`, and no
+      message has been sent to the real queue yet (it's sitting idle,
+      confirmed by the deployed task's own steady-state logs showing only
+      the health endpoint listening, nothing past startup). Whether the
+      real IAM grant actually works end-to-end from inside the deployed
+      task is still an open, real question -- likely yes (the policy is
+      byte-identical to what `smoke_test_telemetry.py` already proved the
+      *mechanism* does under different credentials), but "likely" is not
+      "measured," and this project doesn't count something as verified
+      until it's actually been run. **The SQS queue, EventBridge rule, and
+      ECS service/task-definition are now DEPLOYED AND LIVE** (chunk 12) --
+      one real task, `RUNNING`/`HEALTHY`, user-confirmed via the console.
+      The lifecycle-worker Lambdas
       (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) are NOT
       built -- a distinct piece of work from the agent's own SQS queue
       (see chunk 10's "EventBridge scope" note). The dashboard itself
@@ -828,13 +893,15 @@ BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       webhooks are all fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) ask the user for explicit go-ahead, then `cdk deploy EngramAgentStack` -- every prerequisite (ECR repo, secret, scoped push identity, GitHub secrets, a successfully pushed image) is now closed, this is the only remaining step and it is real, billable ECS/VPC/SQS resource creation; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists.
+**Next action, in order (Phase 3 continues):** (1) send one real message to the live `engram-commands.fifo` queue (manually, via `aws sqs send-message` -- matching `agent/main.py`'s documented schema) to prove `consume_loop()` itself, end to end, against the real deployed task -- everything downstream of "a message was received" is already proven (`scripts/smoke_test_main.py`), but the actual SQS receive/delete loop inside the real container has never been exercised; this would also be the first real test of the deployed task role's `cloudwatch:PutMetricData` grant; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists; (6) close the `engram-deploy` ECS/Logs read-access gap (see OPEN list) if this project needs to introspect the running task from code/CI rather than the console again.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-12 — Session 38 · `cdk deploy EngramAgentStack` actually run — the agent is live in real AWS, confirmed running end to end via the console, not just a green CloudFormation checkmark.** User gave explicit go-ahead first, the same standing rule this project has applied to every consequential/billable AWS action since Sessions 31/32. `cdk deploy EngramAgentStack --require-approval never` (under `engram-deploy`) succeeded on the first attempt: 32/32 resources, about 185 seconds — the dedicated `nat_gateways=0` VPC, the FIFO `engram-commands` queue plus its DLQ, the ECS cluster/task definition/service, both IAM roles and their policies, and the disabled sweep rule. The `AWS::ECS::Service` resource itself reaching `CREATE_COMPLETE` was a real, meaningful signal on its own, not just "nothing errored": the `circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True)` added last session specifically watches for a task that keeps failing to start healthy and would have rolled the whole stack back rather than letting it reach this state. **Immediately hit a real, expected-shape limitation trying to verify further**: `engram-deploy` can create and deploy ECS and CloudWatch Logs resources but has no matching READ grant on either — `ecs:ListTasks`/`DescribeTasks` and `logs:DescribeLogStreams`/`GetLogEvents` both came back `AccessDenied`. The existing `LambdaLogsRead` statement from Session 33 only ever covered `/aws/lambda/engram-*`, never anticipating an ECS log group, and nothing in `EngramCdkDeploy` had ever granted ECS describe actions at all. Rather than widening the policy a further time this session, handed the user a detailed, exact console walkthrough instead — ECS cluster → service → task → health status, then CloudWatch → the real log group → the real log stream — and asked them to check directly rather than assuming. **User confirmed directly, and it was a full, real pass**: the task is `RUNNING`/`HEALTHY`, and the actual startup log sequence is all present — `startup check: DB reachable`, `startup check: Cohere embeddings reachable, 1024-dim confirmed`, `startup check: Ollama Cloud reachable`, `startup check: lease acquire/release round-trip OK`, `startup self-tests passed`, and `health endpoint listening on 0.0.0.0:8080` — meaning the deployed task genuinely reached the real memory cluster, Cohere, and Ollama Cloud, and performed a real lease acquire/release round-trip against CockroachDB, all from inside a real Fargate task in AWS, not simulated, not assumed. **This closes the full `agent/main.py` arc that spanned three sessions**: Session 35 built the module and live-verified `process_message()` directly; Session 36 wrote all the SQS/EventBridge/ECS infra and got `cdk synth` clean without deploying anything; Session 37 closed every deploy prerequisite (ECR repo, secret, a new scoped `engram-ecr-push` identity, GitHub secrets, a real pushed image) without deploying; this session actually deployed it and had the result independently confirmed. **Two things stated as still genuinely open, not quietly closed over:** the `engram-deploy` ECS/Logs read-access gap above remains unresolved (deferred rather than widened a third time this session); and the task role's real `cloudwatch:PutMetricData` grant, while now deployed for real, has not yet been exercised by the live task — no message has reached the (currently idle) real queue yet, so `telemetry.record_metric()` has never actually run from inside this deployed container. The next real step is sending one message to the live queue to prove `consume_loop()` itself and this metric path together, for the first time, end to end.
 
 **2026-08-12 — Session 37 · The agent's container image is actually built and live in ECR now -- `scripts/bootstrap_agent_infra.py` run for real, a new scoped `engram-ecr-push` IAM user created, GitHub secrets stashed, `build-agent-image.yml` run and its output verified against the real registry. `cdk deploy` still deliberately not run.** First real run of `bootstrap_agent_infra.py` (under `engram-deploy`) came back exactly split as designed: the `engram/agent-secrets` Secrets Manager secret was created successfully (that policy already had `engram/*` scoped from Session 33's widening), but `engram-agent` ECR repo creation failed outright -- `EngramCdkDeploy` had no `ecr:*` grant of any kind, a real, previously-untested gap in that policy, not assumed to already be covered. Rather than deciding unilaterally, asked the user to choose between widening `engram-deploy` itself to cover ECR push, or creating a dedicated new IAM identity for it -- they chose the dedicated identity (matching this project's existing pattern of purpose-scoped credentials: `engram-phase0`, `engram-deploy`, now `engram-ecr-push`), so handed over exact policy JSON for both pieces: a new statement on `EngramCdkDeploy` (`ecr:CreateRepository`/`DescribeRepositories`/`TagResource` scoped to the repo ARN) and a full policy for the new `engram-ecr-push` user (`ecr:GetAuthorizationToken` on `"*"` -- the same no-ARN-scoping limitation CloudWatch's own metrics actions already have -- plus the six push actions scoped to that one repo). Walked the user through the exact IAM console steps for both when asked. Re-running the bootstrap under `engram-deploy` after the widening succeeded fully: ECR repo created, secret value refreshed. Verified the new `engram-ecr-push` credentials' identity via `sts get-caller-identity` before trusting them for anything, then pushed both key values into GitHub repo secrets via `gh secret set` (values never echoed back or written to any file). Running `build-agent-image.yml` required the workflow to exist on the remote at all, which meant committing and pushing Sessions 35/36's still-uncommitted work (`agent/telemetry.py`, `agent/main.py`, the new CDK agent stack, tests) too -- asked the user explicitly before running `git push` to main, rather than assuming a green light from "trigger the build" alone. **Two real bugs surfaced only by an actual GitHub Actions run, neither visible from local review or `ast.parse`-style checks:** (1) `gh workflow run` returned a misleading `422 "Workflow does not have workflow_dispatch trigger"` even though the committed YAML plainly had one under `on:` -- it turned out GitHub silently fails to register ANY trigger at all when a workflow file fails to parse, and nothing about the 422 message hints at a parse error specifically. Running the file through `yaml.safe_load()` locally immediately found the real cause: an unquoted colon inside a step's `name:` value (`Build and push (tags: git sha + latest)`) -- `: ` inside an unquoted YAML scalar starts a nested mapping. Quoted the string; fixed. (2) The next real build attempt failed differently: `COPY workers/common/certs/memory-ca.crt` couldn't find the file in the build context at all -- the repo's own blanket `*.crt` rule in `.gitignore` had silently excluded it from git, the same mistake class already on record TWICE in this project (the old blanket `db/` and `fixtures/` rules) -- the file existed locally (and is hardcoded by path in `workers/common/db.py`, silently relying on every past deploy having happened from a machine that already had it) but had never actually been committed, invisible until something finally built from a genuinely clean checkout. Verified it's actually public before un-ignoring, not assumed safe: `openssl x509` showed subject/issuer both `ISRG Root X1` (Let's Encrypt's own public root CA), zero private-key material. Added narrow `!workers/common/certs/*.crt`/`!dashboard/certs/*.crt` exemptions to the blanket rule rather than removing it outright, so CI-fetched transient certs (`cluster-ca.crt`/`target-ca.crt` in the existing workflows) correctly stay ignored. Checked `dashboard/certs`'s identical-looking exclusion before touching it and found it was a different, already-deliberate, already-documented choice (its own `.gitignore` comment: "fetched CA cert... refetchable" via a README step) -- left alone, not lumped in with the real bug. Committed both fixes, pushed, re-triggered: `build-agent-image.yml` succeeded in 41 seconds, and confirmed the pushed `latest` tag actually exists in ECR afterward via a real `ecr:BatchGetImage` call under the new credentials (a real image digest returned) -- not assumed correct from a green checkmark alone. **Also corrected a stale claim this file had been carrying since around Session 29**: `CCLOUD_TOKEN` IS already a GitHub Actions repo secret (`gh secret list` confirms it, dated 2026-08-11) -- the "still local-only" note had never been re-checked and removed after it was actually added, and is now removed from the Next-action list. **Every prerequisite for `cdk deploy EngramAgentStack` is now closed** -- explicit user go-ahead is the only thing standing between here and a real deployed ECS Fargate service, and that line is deliberately still being held, per this project's own standing rule restated every session it applies.
 
