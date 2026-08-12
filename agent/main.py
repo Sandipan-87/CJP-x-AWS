@@ -98,6 +98,32 @@ the next session doesn't have to re-derive them:
    re-checks DB reachability (`db.ping()`) on every request rather than
    caching the startup self-test result, since a target group polls this
    continuously and DB health can change after startup.
+8. **Redelivery after a mid-run crash now resumes via checkpoint instead of
+   replaying the whole graph (closes CLAUDE.md's own Session 41 finding and
+   its "Next action" item #1).** `process_message()` reads the dedupe'd
+   task's status BEFORE overwriting it to `"running"` — if it was already
+   `"running"`, a prior attempt started this exact task and never reached a
+   terminal status (a kill, not a clean park/fail), so `graph.ainvoke(None,
+   config=config)` is used instead of a fresh `_initial_state()`, letting
+   LangGraph's own checkpoint-resume mechanism pick up from whichever node
+   actually completed last rather than re-running `observe`/`recall`/
+   `reason` (and paying for a second real Ollama call) unnecessarily. See
+   `_should_resume()`'s own docstring for why BOTH the task-status check AND
+   an actual checkpoint-progress check (`checkpointer.aget_tuple(config)`,
+   `channel_versions` non-empty) are required together — either alone is
+   provably wrong for a real case this codebase already exercises (a
+   genuinely new occurrence of a previously-completed incident shares the
+   same deterministic `thread_id`, per decision #1, but must NOT resume a
+   finished checkpoint). `Runtime` gained a `checkpointer` field (`None` by
+   default, so every existing caller/test that doesn't set it is
+   unaffected) purely so `process_message()` can ask it this one question —
+   the graph itself already had the checkpointer since Session 27/35, this
+   just gives the orchestration layer around it the same visibility.
+   **DB-level idempotency (the actual exactly-once guarantee) is unchanged
+   and still the correctness backstop regardless of what LangGraph itself
+   skips** — this change is a real efficiency fix (skip redundant node
+   re-execution and its LLM/API cost), not a correctness fix; Session 41's
+   kill-and-resume test already proved correctness held even without it.
 
 WHAT THIS SESSION DOES **NOT** DO, stated plainly:
 
@@ -140,6 +166,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_cockroachdb import AsyncCockroachDBSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from agent.errors import EngramError
@@ -188,6 +215,7 @@ class Runtime:
     holder_id: str
     lease_renew_s: float
     latency_threshold_ms: float
+    checkpointer: BaseCheckpointSaver | None = None
 
 
 def _holder_id() -> str:
@@ -216,6 +244,43 @@ def _dsn_with_sslrootcert(dsn: str, sslrootcert: str | None) -> str:
         sep = "&" if "?" in dsn else "?"
         return f"{dsn}{sep}sslrootcert={sslrootcert}"
     return dsn
+
+
+async def _should_resume(runtime: Runtime, status_before: str | None, config: dict) -> bool:
+    """See module docstring, decision #8. True only when BOTH:
+
+    (a) `insert_task`'s dedupe landed on a task that was already
+        `status='running'` -- a prior attempt started this exact task and
+        never reached a terminal status, i.e. it crashed mid-run (an
+        `aws ecs stop-task`, a SIGKILL); and
+    (b) a real LangGraph checkpoint with actual progress (`channel_versions`
+        non-empty -- the same signal `langgraph`'s own `_loop.py` uses
+        internally to decide `is_resuming`) exists for this `thread_id`.
+
+    Checking (a) alone is not enough: `thread_id` is derived purely from the
+    query's fingerprint (`_thread_id_for_fingerprint`), so a genuinely NEW
+    occurrence of a previously-COMPLETED incident (the "it remembers"
+    recall-hit demo path, CLAUDE.md Session 41) shares that same `thread_id`
+    and its checkpoint history, but `insert_task`'s dedupe SELECT only
+    matches non-terminal statuses, so that case gets a brand-new `task_id`
+    with no prior status at all -- it must still run the full graph from
+    `observe`, not resume a stale, already-finished checkpoint.
+
+    Checking (b) alone is not enough either: it would ALSO be true for that
+    same already-completed-incident case (the checkpoint history is real,
+    just finished), and it guards a narrow but real race this project's own
+    lease/crash-recovery discipline doesn't otherwise cover -- a process
+    could die after writing `status='running'` but before ever calling
+    `ainvoke` once, leaving no checkpoint at all. `ainvoke(None, ...)` in
+    that case doesn't fail loudly (LangGraph's own `is_resuming` gate simply
+    treats it as nothing to do), so status alone would silently produce an
+    empty run instead of the real incident being processed; checking for a
+    real checkpoint first avoids that.
+    """
+    if status_before != "running" or runtime.checkpointer is None:
+        return False
+    checkpoint_tuple = await runtime.checkpointer.aget_tuple(config)
+    return checkpoint_tuple is not None and bool(checkpoint_tuple.checkpoint.get("channel_versions"))
 
 
 def _classify_exception(exc: BaseException) -> str:
@@ -298,6 +363,7 @@ async def build_runtime(stack: AsyncExitStack) -> Runtime:
         backup_gate=backup_gate, telemetry=telemetry, graph=graph,
         holder_id=_holder_id(), lease_renew_s=lease_renew_s,
         latency_threshold_ms=DEFAULT_LATENCY_THRESHOLD_MS,
+        checkpointer=checkpointer,
     )
 
 
@@ -371,6 +437,8 @@ async def process_message(runtime: Runtime, msg: dict[str, Any]) -> str:
     task_id = await runtime.db.insert_task(
         scope_id, "incident", trigger, target_cluster_id=target_cluster_id, incident_fingerprint=fp,
     )
+    status_before = await runtime.db.get_task_status(task_id)
+    resuming = await _should_resume(runtime, status_before, config)
     await runtime.db.set_checkpoint_thread_id(task_id, thread_id)
     await runtime.db.update_task_status(task_id, "running")
 
@@ -378,7 +446,14 @@ async def process_message(runtime: Runtime, msg: dict[str, Any]) -> str:
         runtime.db, task_id, runtime.holder_id, renew_interval_s=runtime.lease_renew_s,
     )
     try:
-        ainvoke_task = asyncio.ensure_future(runtime.graph.ainvoke(state, config=config))
+        ainvoke_input = None if resuming else state
+        if resuming:
+            logger.info(
+                "task_id=%s dedup'd onto an already-'running' attempt (thread_id=%s) with a real "
+                "checkpoint -- resuming from where it left off instead of replaying the whole graph",
+                task_id, thread_id,
+            )
+        ainvoke_task = asyncio.ensure_future(runtime.graph.ainvoke(ainvoke_input, config=config))
         lost_task = asyncio.ensure_future(lease.wait_until_lost())
         done, _pending = await asyncio.wait({ainvoke_task, lost_task}, return_when=asyncio.FIRST_COMPLETED)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,10 +65,12 @@ class _FakeGraph:
         self.calls: list[tuple] = []
 
     async def ainvoke(self, state, config=None):
-        self.calls.append((dict(state), config))
+        # `state` is `None` on a checkpoint-resumed call (see `_should_resume`) --
+        # recorded as `None` rather than `dict(None)`, which would raise.
+        self.calls.append((dict(state) if state is not None else None, config))
         if self.exc is not None:
             raise self.exc
-        return {**state, "phase": "done"}
+        return {**(state or {}), "phase": "done"}
 
 
 class _FakeLeaseHandle:
@@ -85,33 +88,68 @@ class _FakeLeaseHandle:
 
 
 class _FakeDb:
-    def __init__(self) -> None:
+    """`existing_task_id`/`existing_status` simulate `insert_task`'s dedupe
+    path landing on an already-in-flight task -- the redelivery-after-crash
+    scenario `_should_resume` cares about -- without needing a real
+    `tasks_active_incident_idx` unique-violation round-trip.
+    """
+
+    def __init__(self, *, existing_task_id: str | None = None, existing_status: str = "pending") -> None:
         self.tasks: dict[str, dict] = {}
         self._next_id = 0
         self.status_updates: list[tuple[str, str]] = []
         self.thread_id_writes: list[tuple[str, str]] = []
+        self._dedupe_onto = existing_task_id
+        if existing_task_id is not None:
+            self.tasks[existing_task_id] = {"status": existing_status}
 
     async def insert_task(self, scope_id, task_type, trigger, *, target_cluster_id=None, incident_fingerprint=None, parent_task_id=None):
+        if self._dedupe_onto is not None:
+            return self._dedupe_onto
         self._next_id += 1
         task_id = f"task-{self._next_id}"
         self.tasks[task_id] = {
             "scope_id": scope_id, "task_type": task_type, "trigger": trigger,
             "target_cluster_id": target_cluster_id, "incident_fingerprint": incident_fingerprint,
+            "status": "pending",
         }
         return task_id
+
+    async def get_task_status(self, task_id):
+        return self.tasks.get(task_id, {}).get("status")
 
     async def set_checkpoint_thread_id(self, task_id, thread_id):
         self.thread_id_writes.append((task_id, thread_id))
 
     async def update_task_status(self, task_id, status):
         self.status_updates.append((task_id, status))
+        if task_id in self.tasks:
+            self.tasks[task_id]["status"] = status
 
 
-def _make_runtime(*, graph, sql_probe, db, lease_acquire) -> tuple[Runtime, object]:
+class _FakeCheckpointer:
+    """`has_progress=True` simulates a real checkpoint with at least one
+    completed node (`channel_versions` non-empty); `False` simulates either
+    no checkpoint at all or one from a run that never got past `START`.
+    """
+
+    def __init__(self, *, has_progress: bool) -> None:
+        self.has_progress = has_progress
+        self.calls: list[dict] = []
+
+    async def aget_tuple(self, config):
+        self.calls.append(config)
+        if not self.has_progress:
+            return None
+        return SimpleNamespace(checkpoint={"channel_versions": {"phase": 3}})
+
+
+def _make_runtime(*, graph, sql_probe, db, lease_acquire, checkpointer=None) -> tuple[Runtime, object]:
     runtime = Runtime(
         db=db, embed_provider=None, llm=None, sql_probe=sql_probe, sql_operator=None,
         backup_gate=None, telemetry=None, graph=graph,
         holder_id="test-holder", lease_renew_s=15.0, latency_threshold_ms=1000.0,
+        checkpointer=checkpointer,
     )
     return runtime, lease_acquire
 
@@ -192,6 +230,107 @@ def test_incident_engram_error_parks_and_deletes_lease(monkeypatch):
     assert outcome == "parked"
     assert "parked" in [s for _, s in db.status_updates]
     assert handle.released is True
+
+
+# ---------------------------------------------------------------- checkpoint-resume (_should_resume)
+
+def test_incident_resumes_via_checkpoint_when_redelivered_mid_run(monkeypatch):
+    """The actual fix: a dedupe hit onto an already-`running` task, backed by
+    a real checkpoint with progress, must call `ainvoke(None, ...)` -- not
+    replay a fresh `_initial_state()` -- so LangGraph's own checkpoint-resume
+    skips whichever nodes already completed before the crash.
+    """
+    db = _FakeDb(existing_task_id="task-resume-1", existing_status="running")
+    graph = _FakeGraph()
+    probe = _FakeSqlProbe(ANOMALOUS)
+    checkpointer = _FakeCheckpointer(has_progress=True)
+    handle = _FakeLeaseHandle()
+
+    async def fake_acquire(*args, **kwargs):
+        return handle
+
+    monkeypatch.setattr("agent.main.leases.acquire", fake_acquire)
+    runtime, _ = _make_runtime(graph=graph, sql_probe=probe, db=db, lease_acquire=fake_acquire, checkpointer=checkpointer)
+
+    outcome = asyncio.run(process_message(runtime, MESSAGE))
+
+    assert outcome == "completed"
+    assert len(checkpointer.calls) == 1  # aget_tuple was actually consulted
+    resumed_state, _config = graph.calls[0]
+    assert resumed_state is None  # None input -> LangGraph resumes, doesn't replay from observe
+    assert db.thread_id_writes[0][0] == "task-resume-1"  # dedup'd onto the existing task, not a new one
+
+
+def test_incident_does_not_resume_when_dedup_task_is_not_running(monkeypatch):
+    """Status alone gates resume: a dedupe hit onto a task that isn't
+    'running' (e.g. still 'pending' in some narrow race window) must run the
+    full graph, even if a checkpoint with progress happens to exist for the
+    shared thread_id.
+    """
+    db = _FakeDb(existing_task_id="task-2", existing_status="pending")
+    graph = _FakeGraph()
+    probe = _FakeSqlProbe(ANOMALOUS)
+    checkpointer = _FakeCheckpointer(has_progress=True)
+    handle = _FakeLeaseHandle()
+
+    async def fake_acquire(*args, **kwargs):
+        return handle
+
+    monkeypatch.setattr("agent.main.leases.acquire", fake_acquire)
+    runtime, _ = _make_runtime(graph=graph, sql_probe=probe, db=db, lease_acquire=fake_acquire, checkpointer=checkpointer)
+
+    outcome = asyncio.run(process_message(runtime, MESSAGE))
+
+    assert outcome == "completed"
+    resumed_state, _config = graph.calls[0]
+    assert resumed_state is not None  # fresh state, not a resume
+
+
+def test_incident_falls_back_to_fresh_state_when_running_but_no_checkpoint_progress(monkeypatch):
+    """The narrow race `_should_resume`'s docstring names: status is already
+    'running' but no checkpoint was ever written (died before the first
+    `ainvoke`). Must fall back to a fresh `_initial_state()`, not
+    `ainvoke(None, ...)`, which would silently do nothing.
+    """
+    db = _FakeDb(existing_task_id="task-3", existing_status="running")
+    graph = _FakeGraph()
+    probe = _FakeSqlProbe(ANOMALOUS)
+    checkpointer = _FakeCheckpointer(has_progress=False)
+    handle = _FakeLeaseHandle()
+
+    async def fake_acquire(*args, **kwargs):
+        return handle
+
+    monkeypatch.setattr("agent.main.leases.acquire", fake_acquire)
+    runtime, _ = _make_runtime(graph=graph, sql_probe=probe, db=db, lease_acquire=fake_acquire, checkpointer=checkpointer)
+
+    outcome = asyncio.run(process_message(runtime, MESSAGE))
+
+    assert outcome == "completed"
+    resumed_state, _config = graph.calls[0]
+    assert resumed_state is not None  # no real checkpoint progress -> fresh state, not None
+
+
+def test_incident_without_checkpointer_never_resumes(monkeypatch):
+    """Backward compatibility: `Runtime.checkpointer=None` (every pre-existing
+    caller/test) must never attempt a resume, even if status is 'running'.
+    """
+    db = _FakeDb(existing_task_id="task-4", existing_status="running")
+    graph = _FakeGraph()
+    probe = _FakeSqlProbe(ANOMALOUS)
+    handle = _FakeLeaseHandle()
+
+    async def fake_acquire(*args, **kwargs):
+        return handle
+
+    monkeypatch.setattr("agent.main.leases.acquire", fake_acquire)
+    runtime, _ = _make_runtime(graph=graph, sql_probe=probe, db=db, lease_acquire=fake_acquire, checkpointer=None)
+
+    outcome = asyncio.run(process_message(runtime, MESSAGE))
+
+    assert outcome == "completed"
+    resumed_state, _config = graph.calls[0]
+    assert resumed_state is not None
 
 
 def test_incident_unexpected_exception_is_failed(monkeypatch):

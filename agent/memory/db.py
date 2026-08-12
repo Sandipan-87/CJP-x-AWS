@@ -245,6 +245,20 @@ class Database:
                 (status, task_id),
             )
 
+    async def get_task_status(self, task_id: str) -> str | None:
+        """Read-your-own-write check `agent/main.py` uses to tell a genuinely
+        fresh incident from a redelivery of one already in flight: if
+        `insert_task`'s dedupe landed on an existing row whose status is
+        already 'running', a prior attempt started this exact task and never
+        reached a terminal status (crashed mid-run) -- the signal to resume
+        from checkpoint instead of replaying the whole graph. Returns `None`
+        only if `task_id` doesn't exist, which doesn't happen in the one
+        caller of this method (always called right after `insert_task`
+        returns a real id), but is handled rather than assumed.
+        """
+        rows = await self._read("SELECT status FROM tasks WHERE task_id = %s", (task_id,))
+        return rows[0]["status"] if rows else None
+
     async def set_checkpoint_thread_id(self, task_id: str, thread_id: str) -> None:
         """Closes the gap `agent/graph.py`'s own module docstring names since
         Session 27: nothing wrote `tasks.checkpoint_thread_id` before
