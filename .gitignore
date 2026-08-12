@@ -4,6 +4,15 @@
 *.pem
 *.key
 *.crt
+# Same class of mistake as the old blanket db/ and fixtures/ rules below: these two are the
+# public CockroachDB Cloud root CA cert (ISRG Root X1 -- Let's Encrypt's own root, checked
+# 2026-08-12: no private key, nothing sensitive) that workers/, dashboard/, and now agent/'s
+# Dockerfile all need present at a known path. A CA cert is public by definition -- verified
+# before un-ignoring, not assumed safe. Transient certs fetched fresh per CI run (e.g.
+# cluster-ca.crt/target-ca.crt in .github/workflows/*) stay correctly ignored by the blanket
+# rule above; only these two checked-in, reused assets are exempted.
+!workers/common/certs/*.crt
+!dashboard/certs/*.crt
 credentials.json
 
 __pycache__/
