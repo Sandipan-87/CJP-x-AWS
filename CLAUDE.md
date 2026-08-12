@@ -976,6 +976,105 @@ DONE (Phase 3, chunk 14)  **A real INCIDENT-shaped message was sent to the
       recall hit / faster second pass) and an `aws ecs stop-task`
       mid-remediation kill-and-resume, neither attempted this session.
 
+DONE (Phase 3, chunk 15)  **BOTH submission demo beats proven live, 2026-
+      08-12 -- "it remembers" (a real recall hit + exactly-once dedup) and
+      "it survives" (a real `aws ecs stop-task` mid-remediation, a real
+      ECS-driven replacement, a real resumed completion) -- plus a real,
+      previously-latent production bug found and fixed live along the way,
+      not smoothed over.** **The bug, found by the FIRST attempt at the
+      recall-hit test**: a second incident against the SAME scope (which
+      by then had a real `episode` memory item from chunk 14's outcome,
+      `embedding=NULL` by the seed-then-backfill design LLD's own comment
+      already named) was correctly classified `task_type='incident'` but
+      the task ended `status='failed'` with ZERO `decisions` rows written
+      -- meaning it crashed inside `recall(node)`, before it ever got to
+      persist anything. Confirmed directly, not guessed: `recall_ann()`
+      itself doesn't crash (CockroachDB's `<=>` against a NULL embedding
+      just returns SQL `NULL`, no error), but `agent/memory/scoring.py`'s
+      `hybrid()` does `0.45 * similarity` unconditionally -- `0.45 *
+      None` raises a plain `TypeError`, which is NOT an `EngramError`
+      subclass, so `main.py`'s own classifier correctly (if unhelpfully)
+      called it `"failed"`. **This bug had been latent in `recall_ann()`
+      since Session 14** -- nothing before this session had ever run a
+      SECOND real incident against a scope that already had a real
+      episode row, in any smoke test or prior live run; proving the
+      "it remembers" demo beat is exactly what exercised this path for
+      the first time. Fixed with `AND embedding IS NOT NULL` in
+      `recall_ann()`'s `WHERE` clause (a NULL-embedding row can't be
+      meaningfully ANN-ranked in the first place -- excluding it is the
+      correct fix, not a workaround) and added a live regression check to
+      `scripts/smoke_test_recall.py` (13/13, including the new case).
+      **This is the first real bug this project has shipped to the live
+      deployment and then had to patch and redeploy** -- a genuinely new
+      operational step, done for real: committed the fix, re-ran
+      `build-agent-image.yml` (a second real image, new digest), then hit
+      a THIRD real IAM gap trying to actually roll it out --
+      `engram-deploy` had no `ecs:UpdateService` at all. Asked the user for
+      a bundled grant covering everything both the redeploy AND the
+      upcoming kill-and-resume test would need in one round trip rather
+      than trickling through separate asks: `UpdateService`/
+      `DescribeServices` (worked scoped to the cluster/service ARNs) plus
+      `ListTasks`/`DescribeTasks`/`StopTask` -- which hit a FOURTH real,
+      genuinely informative AWS quirk: `ecs:ListTasks` checks a
+      `container-instance` ARN pattern internally regardless of which
+      filter you call it with, not the `cluster`/`service`/`task` ARNs
+      that would seem to apply -- the same class of "AWS's own resource-
+      level IAM scoping doesn't cleanly map to intuition" limitation
+      already on record in this project for CloudWatch's `GetMetricData`/
+      `ListMetrics`. Fixed the same way: `Resource: "*"` for those three
+      actions specifically, scoped ARNs kept for the two that supported
+      them. Forced the redeploy (`ecs:update_service(forceNewDeployment=
+      True)`), confirmed via `ecs:DescribeTasks` that the new task's
+      container image digest matched the freshly-pushed one exactly (not
+      assumed from a timestamp) -- the FIRST time this session could
+      verify ECS/task state directly instead of asking the user to check
+      the console. **"It remembers," verified for real after the
+      redeploy**: sent a fresh incident against the same fingerprint;
+      the `decisions(node='recall')` row shows 5 real citations (all
+      `class='query_fingerprint'`, similarity ~0.62) to memory items
+      written by EARLIER incidents against this exact query shape --
+      genuine recall, not fabricated. Even more informative than a plain
+      approval-and-apply would have been: `gate()`'s idempotency-key dedup
+      recognized this EXACT remediation (same table+column) was already
+      applied successfully in chunk 14, so it reconciled onto that
+      existing `remediation_actions` row instead of creating a duplicate
+      or re-running the DDL -- invariant #4's exactly-once guarantee,
+      caught working correctly across incidents, not just within one.
+      **"It survives," proven for real**: a genuinely fresh incident (new
+      scenario table, new fingerprint) was sent; once its real pending
+      approval appeared (NOT yet approved), the currently-running ECS
+      task was stopped for real (`ecs:StopTask`) -- ECS started a
+      replacement task automatically within ~35 seconds (confirmed: a
+      DIFFERENT task ARN, `RUNNING`). The approval was then granted (the
+      original task never got to see this decision), and the NEW task
+      picked up the redelivered SQS message and completed the interrupted
+      work: `outcome='success'`, exactly ONE `remediation_actions` row for
+      the whole episode (confirmed by direct count), a real index
+      confirmed via `SHOW INDEXES` on the target cluster, zero leftover
+      `agent_leases` rows. **A precise, honest mechanism finding, not
+      overclaimed**: `observations` shows 2 rows and `decisions` shows
+      `recall→reason→gate` ran once (before the kill) and
+      `recall→reason→act` ran AGAIN after redelivery (no second `gate`
+      decision, since its idempotency check found the by-then-approved
+      row and skipped straight to `act`) -- meaning recovery here is
+      achieved by DB-LEVEL IDEMPOTENCY across a full graph re-run
+      (`process_message()` always builds a fresh initial state rather
+      than passing `None` to resume from checkpoint), NOT a true LangGraph
+      checkpoint-resume that would have skipped the already-completed
+      `observe`/`recall`/`reason` nodes. The checkpointer IS persisting
+      real state throughout (12 real rows in `checkpoints` for this
+      thread, confirmed) -- it just isn't being used as an execution-skip
+      optimization yet, a real, measurable cost (a second real Ollama
+      call for the same incident) worth closing in a future session, not
+      a correctness gap: the exactly-once guarantee held regardless,
+      because it's enforced at the DB layer (`tasks_active_incident_idx`,
+      `remediation_actions.idempotency_key`), independent of whatever
+      LangGraph itself does or doesn't skip. Cleaned up both disposable
+      target-cluster scratch tables afterward; left every resulting
+      `tasks`/`observations`/`decisions`/`remediation_actions`/
+      `approvals`/`checkpoints` row in the memory cluster, same reasoning
+      as chunks 13/14.
+
 OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       implemented -- `exactly_once_conflicts_detected` correctly stays
       unemitted because of it (Session 34). **Correction to a stale claim
@@ -994,16 +1093,29 @@ OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       .record_metric()` only runs inside `process_message()`, and no
       message has been sent to the real queue yet (it's sitting idle,
       confirmed by the deployed task's own steady-state logs showing only
-      the health endpoint listening, nothing past startup). Whether the
-      real IAM grant actually works end-to-end from inside the deployed
-      task is still an open, real question -- likely yes (the policy is
-      byte-identical to what `smoke_test_telemetry.py` already proved the
-      *mechanism* does under different credentials), but "likely" is not
-      "measured," and this project doesn't count something as verified
-      until it's actually been run. **The SQS queue, EventBridge rule, and
-      ECS service/task-definition are now DEPLOYED AND LIVE** (chunk 12) --
-      one real task, `RUNNING`/`HEALTHY`, user-confirmed via the console.
-      The lifecycle-worker Lambdas
+      the health endpoint listening, nothing past startup). **Update,
+      chunk 15**: `observe(node)`'s `sweep_cycle_ms` call has now genuinely
+      fired from inside the live task multiple times (every sweep/incident
+      run across chunks 13-15) -- but this is still NOT independently
+      confirmed via CloudWatch itself (no `cloudwatch:GetMetricData`/
+      `ListMetrics` read grant for `engram-deploy`, a distinct gap from
+      the ECS/Logs read access chunk 15 DID close). The code path that
+      calls `PutMetricData` is proven to run repeatedly for real; whether
+      the metric actually LANDS in CloudWatch remains unverified. **The
+      SQS queue, EventBridge rule, and ECS service/task-definition are now
+      DEPLOYED AND LIVE** (chunk 12), and (chunk 15) `engram-deploy` can
+      now directly `ListTasks`/`DescribeTasks`/`StopTask`/`UpdateService`/
+      `DescribeServices` on this cluster/service (the `ecs:ListTasks`/
+      `DescribeTasks`/`StopTask` trio needed `Resource: "*"` -- AWS's own
+      resource-level IAM scoping doesn't support the cluster/service/task
+      ARNs you'd expect for these three, same class of limitation already
+      on record for CloudWatch's `GetMetricData`/`ListMetrics`) plus
+      `logs:DescribeLogStreams`/`GetLogEvents` on `/ecs/engram-agent` --
+      no more need to ask the user to check the console for routine task
+      status. `cloudwatch:GetMetricData`/`ListMetrics` and
+      `sqs:GetQueueAttributes` remain ungranted (not asked for this
+      session; low priority since DB-level verification already covers
+      what those would confirm). The lifecycle-worker Lambdas
       (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) are NOT
       built -- a distinct piece of work from the agent's own SQS queue
       (see chunk 10's "EventBridge scope" note). The dashboard itself
@@ -1024,13 +1136,15 @@ BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       webhooks are all fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) the actual submission demo beats -- a SECOND incident against the SAME query fingerprint (to show a fast recall hit + cited prior procedure on screen) and an `aws ecs stop-task` mid-remediation kill-and-resume, both still unattempted against the now-proven-live deployment; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`, now that a manually-sent message has already proven the queue→task pipe itself works both for sweeps and full incidents; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists; (6) close the `engram-deploy` ECS/Logs/SQS-attributes read-access gaps (see OPEN list) if this project needs to introspect the running task/queue from code/CI rather than the console/DB again.
+**Next action, in order (Phase 3 continues):** (1) make kill-and-resume actually SKIP re-completed nodes on redelivery -- pass `None` (not a fresh `_initial_state()`) to `graph.ainvoke()` when `process_message()` detects the pre-inserted task is already `status='running'` (meaning a prior attempt got partway through), so LangGraph's own checkpoint resume is what saves the repeat `recall`/`reason` work, not just DB-level idempotency papering over a full re-run; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`; (3) grant `cloudwatch:GetMetricData`/`ListMetrics` (Resource "*", same limitation as the ECS trio) so the real `PutMetricData` calls chunk 15 confirmed are firing can actually be confirmed landing, not just called; (4) a dashboard metrics panel consuming the now-live `GET /metrics`; (5) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (6) the `gate→reason` re-plan edge, once a loop-prevention design exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-12 — Session 41 · Both submission demo beats proven live — "it remembers" and "it survives" — plus a real, previously-latent production bug found and fixed along the way, not smoothed over.** The recall-hit test found the bug on its first attempt: a second incident against a scope that by then had a real `episode` memory item (`embedding=NULL`, seed-then-backfill by design) was correctly classified as an incident but ended `status='failed'` with zero `decisions` rows — meaning it crashed inside `recall(node)` before writing anything. Confirmed directly: `recall_ann()` itself doesn't error on a NULL embedding (CockroachDB's `<=>` against NULL just returns SQL NULL), but `agent/memory/scoring.py`'s `hybrid()` does `0.45 * similarity` unconditionally, and `0.45 * None` raises a plain `TypeError` — not an `EngramError`, so it surfaced as an opaque "failed" rather than a park. This bug had been latent since Session 14; nothing before this session had ever run a second real incident against a scope that already had a real episode row, in any smoke test or prior live run — proving "it remembers" is exactly what exercised this path for the first time. Fixed with `AND embedding IS NOT NULL` in `recall_ann()`'s WHERE clause (a NULL-embedding row can't be meaningfully ANN-ranked anyway) and added a live regression check to `scripts/smoke_test_recall.py` (13/13). This was the first real bug this project shipped to the live deployment and then had to patch and redeploy — genuinely new operational territory: committed the fix, rebuilt and repushed the image via `build-agent-image.yml`, then hit a third real IAM gap trying to roll it out (`engram-deploy` had no `ecs:UpdateService` at all). Rather than trickling through separate asks, requested one bundled grant covering both the redeploy and the upcoming kill-and-resume test: `UpdateService`/`DescribeServices` (worked scoped to the cluster/service ARNs) plus `ListTasks`/`DescribeTasks`/`StopTask`, which hit a fourth real AWS quirk — `ecs:ListTasks` checks a `container-instance` ARN internally no matter which filter you call it with, not the cluster/service/task ARNs you'd expect, the same class of limitation already on record here for CloudWatch's `GetMetricData`/`ListMetrics`. Fixed with `Resource: "*"` for those three actions specifically. Forced the redeploy and confirmed via `ecs:DescribeTasks` that the new task's container image digest matched the freshly-pushed one exactly — the first time this session could verify ECS state directly instead of asking the user to check the console. "It remembers," verified for real after the redeploy: a fresh incident against the same fingerprint produced a `decisions(node='recall')` row with 5 real citations (all `query_fingerprint`, similarity ~0.62) to memory written by earlier incidents against the same query shape. Even more informative than a plain approve-and-apply: `gate()`'s idempotency-key dedup recognized this exact remediation was already applied successfully in the prior session and reconciled onto the existing `remediation_actions` row instead of duplicating it or re-running the DDL — invariant #4's exactly-once guarantee, now caught working correctly *across* incidents, not just within one. "It survives," proven for real: sent a genuinely fresh incident (new scenario table, new fingerprint), waited for its real pending approval to appear without approving it, then stopped the currently-running ECS task for real. ECS started a replacement automatically within about 35 seconds (a confirmed different task ARN, `RUNNING`). Approved the pending approval only after the replacement was confirmed running — the original task never got to see that decision — and the new task picked up the redelivered SQS message and completed the interrupted work: `outcome='success'`, exactly one `remediation_actions` row for the whole episode, a real index confirmed via `SHOW INDEXES`, zero leftover `agent_leases` rows. One precise, honest mechanism finding rather than an overclaim: `observations` shows 2 rows and `decisions` shows `recall→reason→gate` ran once before the kill and `recall→reason→act` ran again after redelivery (no second `gate` decision, since its idempotency check found the by-then-approved row and skipped straight to `act`) — meaning recovery here is achieved by DB-level idempotency across a full graph re-run, not a true LangGraph checkpoint-resume that would have skipped the already-completed `observe`/`recall`/`reason` nodes; `process_message()` always builds a fresh initial state rather than passing `None` to actually resume from checkpoint. The checkpointer IS persisting real state throughout (12 real rows for this thread, confirmed) — it just isn't being used as an execution-skip optimization yet, a real, measurable inefficiency (a second real Ollama call for the same incident) worth closing next, not a correctness gap, since the exactly-once guarantee is enforced at the DB layer regardless of what LangGraph itself skips. Cleaned up both disposable target-cluster scratch tables afterward; left every resulting `tasks`/`observations`/`decisions`/`remediation_actions`/`approvals`/`checkpoints` row in the memory cluster, same reasoning as the two prior sessions' live tests — this is the real system doing its real job, not test debris.
 
 **2026-08-12 — Session 40 · Sent a real incident-shaped message to the live queue and watched the FULL observe→recall→reason→gate→act_measure loop run end to end through the deployed ECS task — the actual product this project exists to demonstrate, now proven live in AWS, not just unit-tested or exercised via a local smoke test.** Two real, genuinely informative failures on the way there, neither hidden. First: a query calibrated as "slow" by probing it directly from this dev machine first (measured 5.1s locally) got classified as a routine sweep by the deployed task instead of an incident — its own observation row showed a real `latency_ms=622`, comfortably under the anomaly threshold. Root cause: probing the query myself first warmed CockroachDB's block cache for the entire table (a full scan touches every block regardless of which value is filtered on), so the deployed task's own later measurement against the same table hit warm cache and ran fast. Fixed by using a brand-new, never-locally-probed table for the retry. Second, and more interesting: that retry ALSO measured fast from the deployed task (`latency_ms=316`) despite being genuinely cold — revealing that `EXPLAIN ANALYZE`'s reported timing includes a meaningful client-round-trip/result-streaming component, not purely server-side execution cost, so the exact same query and table measure very differently depending on how far away the CALLER is from the cluster: this dev machine (far from AWS us-east-1) saw 5.1 seconds for a 300k-row scan, while the ECS task (co-located in the same AWS region as the CockroachDB Cloud cluster) saw well under a second for an equivalent scan. A real, previously-unknown property of this measurement, not a bug — and it means a "slow query" calibrated from this dev environment simply doesn't transfer to what the deployed task will measure. Fixed by scaling up data volume substantially (1.5M rows) until the query stayed slow even measured from inside AWS — which surfaced a third real, informative fact along the way: a single `INSERT...SELECT` of 1.5M rows in one transaction hit a genuine CockroachDB limit (`ConfigurationLimitExceeded`, the per-transaction lock-tracking memory budget, ~1MB of intents), fixed by batching the insert into five separate 300k-row transactions. **The retry then succeeded completely**: correctly classified as `task_type='incident'`; a real Ollama Cloud call proposed `create_index` on `customer_id`, matching the optimizer's own real index recommendation from the same `EXPLAIN` output; a real pending approval was created and approved by a concurrent script polling the live memory cluster in real time (the same `_approve_when_ready` technique every prior smoke test already used, now aimed at the actual deployed system instead of a local one); the real (non-override) backup gate passed for real; a real `CREATE INDEX` was applied via the deployed task's own `SqlOperator`; and the final `remediation_actions.outcome` came back `'success'`. Verified exhaustively afterward rather than trusting one field: `tasks.status='completed'`, `checkpoint_thread_id` matched the deterministic `tid-<fingerprint>` scheme with 7 real rows in `checkpoints`, `agent_leases` had zero rows left (clean release), all four `decisions` rows exist in the correct order with real model IDs, the `approvals` row shows the real approval, and `SHOW INDEXES` on the real target cluster confirms the new index genuinely exists. **One more real thing caught and understood along the way, in this session's own verification script rather than the product**: an early poll returned a row with `status='applied'` but `outcome=None`, which looked like a hang — this is ADR-004's ledger-first protocol working exactly as designed (the ledger commits `status='applied'` before the real DDL/measurement even runs, specifically so a crash in between is reconcilable), not a bug; the polling script was just checking the wrong field, and re-querying moments later showed the already-complete row. Cleaned up the disposable target-cluster scratch table; deliberately left the resulting `tasks`/`decisions`/`remediation_actions`/`approvals`/`checkpoints` rows in the memory cluster, same reasoning as last session's sweep test — this is the real system doing its real job, not test debris to tidy away. **What's left toward the actual submission demo beats, stated plainly**: a second incident against the same query fingerprint (to show a fast recall hit and a cited prior procedure on screen) and an `aws ecs stop-task` mid-remediation kill-and-resume — both still unattempted, now that the underlying full loop has been shown working live for the first time.
 
