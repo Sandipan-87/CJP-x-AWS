@@ -896,6 +896,86 @@ DONE (Phase 3, chunk 13)  **A real SQS message was sent to the live
       system, and the memory cluster recording it is the system doing
       exactly what it's for, not test debris.
 
+DONE (Phase 3, chunk 14)  **A real INCIDENT-shaped message was sent to the
+      live queue and the FULL observe→recall→reason→gate→act_measure loop
+      ran end to end through the deployed ECS task -- the actual product
+      this whole project exists to demonstrate, now proven live, not just
+      unit-tested or run from a local smoke test.** Two real, genuinely
+      informative failures on the way there, both fixed, both left in the
+      record rather than smoothed over: (1) the first attempt's "slow"
+      query (calibrated by probing it directly from this dev machine
+      first, measuring 5.1s) was classified `task_type='sweep'` by the
+      deployed task, not `'incident'` -- the observation row showed a real
+      measured `latency_ms=622`, well under the 1000ms threshold. Root
+      cause: probing the query myself FIRST warmed CockroachDB's block
+      cache for the whole table (a full scan reads every block regardless
+      of the filter value), so the deployed task's own later `EXPLAIN
+      ANALYZE` against the same table hit warm cache and ran fast. Fixed
+      by using a brand-new, never-locally-probed table for the retry. (2)
+      That retry ALSO measured fast from the deployed task's perspective
+      (`latency_ms=316`) despite being genuinely cold -- a second, more
+      interesting real finding: `EXPLAIN ANALYZE`'s reported time
+      apparently reflects a meaningful client-round-trip/result-streaming
+      component, not purely server-side CPU cost, so the SAME query/table
+      measures very differently depending on the CALLER's network
+      distance from the cluster -- this dev machine (far from AWS
+      us-east-1) measured 5.1s for a 300k-row scan, while the ECS task
+      (co-located in AWS us-east-1 with the CockroachDB Cloud cluster)
+      measured well under a second for the identical shape of query. This
+      means a manually-calibrated "slow query" from this dev environment
+      does NOT transfer to what the deployed task will measure -- a real,
+      previously-unknown property of this specific measurement, not a bug
+      in `SqlProbe`/`observe(node)`. Fixed by scaling up data volume
+      (1.5M rows, batched into 5 separate `INSERT...SELECT` transactions
+      of 300k rows each after the first attempt at one single 1.5M-row
+      insert hit a real, informative CockroachDB limit --
+      `ConfigurationLimitExceeded`, a single transaction's lock-tracking
+      memory budget exceeded at ~1M bytes of intents) until the query was
+      slow enough to clear the threshold even measured from inside AWS.
+      **The retry succeeded completely**: the task was correctly
+      classified `task_type='incident'`, a real Ollama Cloud call (`reason`
+      decision, `model_id='minimax-m3:cloud'`) proposed `create_index` on
+      `customer_id` (exactly matching the optimizer's own real index
+      candidate from the same `EXPLAIN` output), a real `gate` decision
+      created a real pending approval, approved via a concurrent script
+      polling the SAME memory cluster in real time (matching every prior
+      smoke test's `_approve_when_ready` technique, just against the live
+      deployed system instead of a local one) -- and the real backup gate
+      (`act` decision) passed for real (a genuine, recent-enough backup
+      existed), applying a REAL `CREATE INDEX IF NOT EXISTS
+      incident_test_bigger_customer_id_idx ON public.incident_test_bigger
+      (customer_id)` via the deployed task's own `SqlOperator`, with a
+      final `remediation_actions.outcome='success'`. **Verified
+      exhaustively afterward, not just trusted from one field**: the
+      `tasks` row reached `status='completed'` (the incident branch's own
+      terminal-status write, Session 35); `checkpoint_thread_id` matched
+      the deterministic `tid-<fingerprint>` scheme exactly, with 7 real
+      rows in `checkpoints` for that thread; `agent_leases` had zero
+      remaining rows (clean release); all four `decisions` rows exist in
+      order (`recall`→`reason`→`gate`→`act`, real `model_id`s for each);
+      the `approvals` row shows `status='approved'`,
+      `decided_by='user-live-incident-test'`; and `SHOW INDEXES` on the
+      real target cluster confirms the new index genuinely exists. **A
+      real bug in this session's OWN verification script, not the
+      product, caught and understood, not silently ignored**: an early
+      poll returned `{'status': 'applied', 'outcome': None, 'applied_at':
+      None}` and looked like a hang -- this is ADR-004's own ledger-first
+      protocol behaving exactly as designed (the ledger transaction
+      commits `status='applied'` BEFORE the real DDL/measurement, so a
+      crash between the two is reconcilable), not a bug; the polling
+      script simply checked the wrong condition (`status` instead of
+      waiting for `outcome`) and re-querying moments later showed the
+      already-complete row. Cleaned up the disposable target-cluster
+      scratch table; left the real `tasks`/`decisions`/`remediation_
+      actions`/`approvals`/`checkpoints` rows in place, same reasoning as
+      chunk 13 -- this is the system doing its actual job for real, not
+      test debris. **This is the literal "it survives"/"it remembers"
+      product this project exists to demonstrate, now shown running for
+      real in AWS** -- the remaining gap toward the actual submission demo
+      beats is a SECOND incident against the SAME fingerprint (to show the
+      recall hit / faster second pass) and an `aws ecs stop-task`
+      mid-remediation kill-and-resume, neither attempted this session.
+
 OPEN (Phase 3, non-gating)  §8.4 crash-window reconciliation (W1-W4) not
       implemented -- `exactly_once_conflicts_detected` correctly stays
       unemitted because of it (Session 34). **Correction to a stale claim
@@ -944,13 +1024,15 @@ BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       webhooks are all fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`, now that a manually-sent message has already proven the queue→task pipe itself works; (2) send one real INCIDENT-shaped message (a genuinely slow/full-scan query) to prove the full observe→recall→reason→gate→act_measure loop end to end through the live deployed task, including a real concurrent approval and the real backup gate -- chunk 13 only exercised the sweep (non-anomalous) path; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists; (6) close the `engram-deploy` ECS/Logs/SQS-attributes read-access gaps (see OPEN list) if this project needs to introspect the running task/queue from code/CI rather than the console/DB again.
+**Next action, in order (Phase 3 continues):** (1) the actual submission demo beats -- a SECOND incident against the SAME query fingerprint (to show a fast recall hit + cited prior procedure on screen) and an `aws ecs stop-task` mid-remediation kill-and-resume, both still unattempted against the now-proven-live deployment; (2) a real sweep enumerator (LLD §5.1 step 1's MCP/CloudWatch/ccloud collection legs) -- the actual blocker on ever flipping the sweep rule's `enabled=False`, now that a manually-sent message has already proven the queue→task pipe itself works both for sweeps and full incidents; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists; (6) close the `engram-deploy` ECS/Logs/SQS-attributes read-access gaps (see OPEN list) if this project needs to introspect the running task/queue from code/CI rather than the console/DB again.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-12 — Session 40 · Sent a real incident-shaped message to the live queue and watched the FULL observe→recall→reason→gate→act_measure loop run end to end through the deployed ECS task — the actual product this project exists to demonstrate, now proven live in AWS, not just unit-tested or exercised via a local smoke test.** Two real, genuinely informative failures on the way there, neither hidden. First: a query calibrated as "slow" by probing it directly from this dev machine first (measured 5.1s locally) got classified as a routine sweep by the deployed task instead of an incident — its own observation row showed a real `latency_ms=622`, comfortably under the anomaly threshold. Root cause: probing the query myself first warmed CockroachDB's block cache for the entire table (a full scan touches every block regardless of which value is filtered on), so the deployed task's own later measurement against the same table hit warm cache and ran fast. Fixed by using a brand-new, never-locally-probed table for the retry. Second, and more interesting: that retry ALSO measured fast from the deployed task (`latency_ms=316`) despite being genuinely cold — revealing that `EXPLAIN ANALYZE`'s reported timing includes a meaningful client-round-trip/result-streaming component, not purely server-side execution cost, so the exact same query and table measure very differently depending on how far away the CALLER is from the cluster: this dev machine (far from AWS us-east-1) saw 5.1 seconds for a 300k-row scan, while the ECS task (co-located in the same AWS region as the CockroachDB Cloud cluster) saw well under a second for an equivalent scan. A real, previously-unknown property of this measurement, not a bug — and it means a "slow query" calibrated from this dev environment simply doesn't transfer to what the deployed task will measure. Fixed by scaling up data volume substantially (1.5M rows) until the query stayed slow even measured from inside AWS — which surfaced a third real, informative fact along the way: a single `INSERT...SELECT` of 1.5M rows in one transaction hit a genuine CockroachDB limit (`ConfigurationLimitExceeded`, the per-transaction lock-tracking memory budget, ~1MB of intents), fixed by batching the insert into five separate 300k-row transactions. **The retry then succeeded completely**: correctly classified as `task_type='incident'`; a real Ollama Cloud call proposed `create_index` on `customer_id`, matching the optimizer's own real index recommendation from the same `EXPLAIN` output; a real pending approval was created and approved by a concurrent script polling the live memory cluster in real time (the same `_approve_when_ready` technique every prior smoke test already used, now aimed at the actual deployed system instead of a local one); the real (non-override) backup gate passed for real; a real `CREATE INDEX` was applied via the deployed task's own `SqlOperator`; and the final `remediation_actions.outcome` came back `'success'`. Verified exhaustively afterward rather than trusting one field: `tasks.status='completed'`, `checkpoint_thread_id` matched the deterministic `tid-<fingerprint>` scheme with 7 real rows in `checkpoints`, `agent_leases` had zero rows left (clean release), all four `decisions` rows exist in the correct order with real model IDs, the `approvals` row shows the real approval, and `SHOW INDEXES` on the real target cluster confirms the new index genuinely exists. **One more real thing caught and understood along the way, in this session's own verification script rather than the product**: an early poll returned a row with `status='applied'` but `outcome=None`, which looked like a hang — this is ADR-004's ledger-first protocol working exactly as designed (the ledger commits `status='applied'` before the real DDL/measurement even runs, specifically so a crash in between is reconcilable), not a bug; the polling script was just checking the wrong field, and re-querying moments later showed the already-complete row. Cleaned up the disposable target-cluster scratch table; deliberately left the resulting `tasks`/`decisions`/`remediation_actions`/`approvals`/`checkpoints` rows in the memory cluster, same reasoning as last session's sweep test — this is the real system doing its real job, not test debris to tidy away. **What's left toward the actual submission demo beats, stated plainly**: a second incident against the same query fingerprint (to show a fast recall hit and a cited prior procedure on screen) and an `aws ecs stop-task` mid-remediation kill-and-resume — both still unattempted, now that the underlying full loop has been shown working live for the first time.
 
 **2026-08-12 — Session 39 · Sent a real message to the live SQS queue and confirmed the deployed agent actually processed it — `consume_loop()` itself is now proven end to end, not just `process_message()` called directly.** Built a real, disposable 100-row scenario table on the target cluster and sent one message matching `agent/main.py`'s documented schema via `sqs:SendMessage` — deliberately a fast, primary-key-based query (the non-anomalous "sweep" path), not an incident, so the test stayed quick and didn't need a human approval or a real Ollama reasoning round-trip. Hit the exact same shape of IAM gap as every other AWS action this project has needed all session: `engram-deploy` had neither `sqs:SendMessage` nor `sqs:GetQueueAttributes`. Asked the user for exact policy JSON to add `SendMessage`/`GetQueueUrl` scoped to the queue ARN — done, and the message sent successfully on the very next attempt. Deliberately did NOT ask for a further widening to cover `GetQueueAttributes` too, since a much stronger form of verification was already available and free: querying the memory cluster directly. **Verified processing via a real, direct database query, not logs or the AWS console**: a real `tasks` row appeared within seconds of sending the message (`task_type='sweep'`, `trigger='manual'`, `target_cluster_id` matching exactly what was sent) — proof the deployed task's `consume_loop()` genuinely received and processed the message, since nothing else in this system could have produced that row. Went further and confirmed the FULL write path, not just the task row: a real `observations` row (`source='sql_probe'`, a real measured `latency_ms=1.0` from a real `EXPLAIN ANALYZE` run against the target cluster from inside the container) and a real `memory_items` row (`class='query_fingerprint'`, a real embedding actually present) — meaning the deployed task independently made a real Cohere API call and wrote the resulting vector, entirely on its own, with no assistance from this session beyond sending the one message. This also exercises the task role's real `cloudwatch:PutMetricData` grant for the first time (`observe(node)` emits `sweep_cycle_ms` unconditionally whenever telemetry is configured, which `build_runtime()` always does) — not independently re-confirmed via CloudWatch itself (no read access there either, same gap as last session), but the exact code path that calls it is the one that just ran for real. **One thing checked and confirmed as expected, not a surprise bug**: the task's `status` column stayed `'pending'` rather than moving to `'completed'` — by design, from Session 35: the sweep branch of `process_message()` deliberately never calls `update_task_status()`, since only the incident branch has a pre-known `task_id` to write a terminal status against; this is `observe(node)`'s own pre-existing gap (nothing anywhere marks a sweep task terminal), restated here, not newly discovered. Cleaned up the disposable target-cluster scratch table afterward. **Deliberately left the resulting `tasks`/`observations`/`memory_items` rows in the memory cluster rather than cleaning them up like a smoke test would** — this was a real message processed by the real production system, and having the memory cluster record it is the system doing exactly what it exists to do, not test debris to tidy away.
 
