@@ -7,13 +7,13 @@ import os
 
 import aws_cdk as cdk
 
-from engram_infra.approvals_stack import ApprovalsStack
+from engram_infra.approvals_stack import EngramApiStack
 
 app = cdk.App()
 
-ApprovalsStack(
+EngramApiStack(
     app,
-    "EngramApprovalsStack",
+    "EngramApprovalsStack",  # unchanged construct id -- keeps updating the same deployed stack
     dashboard_origin=os.environ.get("ENGRAM_DASHBOARD_ORIGIN", "http://localhost:3000"),
     env=cdk.Environment(
         account=os.environ.get("CDK_DEFAULT_ACCOUNT"),

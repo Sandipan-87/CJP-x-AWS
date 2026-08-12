@@ -1,4 +1,4 @@
-"""Engram · infra/build.py — prepares the approvals Lambda's deployment package.  [PLUMBER]
+"""Engram · infra/build.py — prepares each Lambda's deployment package.  [PLUMBER]
 
 CDK's usual answer for a Python Lambda with dependencies is `aws_lambda_python_alpha
 .PythonFunction`, which bundles via Docker by default. No Docker is available in this dev
@@ -8,9 +8,14 @@ environment (confirmed: `docker --version` -> command not found) -- same constra
 Since `pg8000` (and its own dependencies, `scramp`/`asn1crypto`) are pure Python with no native
 extension, a plain `pip install --target` from ANY platform, including this Windows dev machine,
 produces a working Lambda package -- no cross-compilation, no Docker, no Lambda Layer needed.
-This module does that: copies `workers/approvals/` + `workers/common/` (which includes the
+This module does that: copies a given handler directory + `workers/common/` (which includes the
 bundled CA cert, `workers/common/certs/memory-ca.crt`) into a build directory, `pip install`s
 `workers/requirements.txt` alongside them, and returns the path for `Code.from_asset()`.
+
+One function per Lambda (`build_approvals_package`/`build_webhooks_package`/
+`build_metrics_package`) rather than one parameterized entry point some stacks call directly --
+each is a one-line call site in its own stack construct, and naming them after what they build
+reads better at the CDK call site than a generic `build_package("webhooks")` would.
 """
 
 from __future__ import annotations
@@ -22,18 +27,19 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKERS_DIR = ROOT / "workers"
-BUILD_DIR = pathlib.Path(__file__).resolve().parent / ".build" / "approvals"
+BUILD_ROOT = pathlib.Path(__file__).resolve().parent / ".build"
 
 
-def build_approvals_package() -> str:
-    if BUILD_DIR.exists():
-        shutil.rmtree(BUILD_DIR)
-    BUILD_DIR.mkdir(parents=True)
+def _build_package(handler_dir_name: str) -> str:
+    build_dir = BUILD_ROOT / handler_dir_name
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir(parents=True)
 
-    for name in ("approvals", "common"):
+    for name in (handler_dir_name, "common"):
         shutil.copytree(
             WORKERS_DIR / name,
-            BUILD_DIR / name,
+            build_dir / name,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
 
@@ -41,15 +47,28 @@ def build_approvals_package() -> str:
         [
             sys.executable, "-m", "pip", "install",
             "-r", str(WORKERS_DIR / "requirements.txt"),
-            "--target", str(BUILD_DIR),
+            "--target", str(build_dir),
             "--no-cache-dir",
             "--quiet",
         ],
         check=True,
     )
-    return str(BUILD_DIR)
+    return str(build_dir)
+
+
+def build_approvals_package() -> str:
+    return _build_package("approvals")
+
+
+def build_webhooks_package() -> str:
+    return _build_package("webhooks")
+
+
+def build_metrics_package() -> str:
+    return _build_package("metrics")
 
 
 if __name__ == "__main__":
-    path = build_approvals_package()
-    print(f"built Lambda package at {path}")
+    for build_fn in (build_approvals_package, build_webhooks_package, build_metrics_package):
+        path = build_fn()
+        print(f"built {path}")

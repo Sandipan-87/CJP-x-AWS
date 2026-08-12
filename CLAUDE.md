@@ -397,38 +397,103 @@ DONE (Phase 3, chunk 6)  **`cdk deploy` actually run, 2026-08-12 --
       assumed). `infra/README.md` and `dashboard/README.md` updated to
       record the live deployment, the real IAM policy that worked, and
       the propagation-delay finding for whoever redeploys next.
+DONE (Phase 3, chunk 7)  **`GET /metrics` + `POST /webhooks/alerts` (LLD
+      §11.2's other two dashboard-facing endpoints) built, unit-tested,
+      deployed, and verified against real AWS -- both live in the same
+      `EngramApprovalsStack`, updated in place, not replaced.** A fifth
+      least-privilege SQL role, `engram_webhook` (`db/migrations/
+      007_webhook_role.sql`: SELECT+INSERT `tasks`, INSERT `observations`,
+      SELECT+INSERT+UPDATE `entities`) closes the write path
+      `workers/webhooks/handler.py` needs -- **a real, measured
+      requirement caught live, not assumed from the SQL alone**: `INSERT
+      ... ON CONFLICT DO UPDATE` needs SELECT to detect the conflict in
+      the first place, on top of INSERT+UPDATE for the two branches;
+      `scripts/bootstrap_webhook_role.py`'s first attempt (INSERT+UPDATE
+      only) failed with exactly that missing-SELECT error. The webhook
+      handler reimplements `agent/memory/db.py`'s `insert_incident_
+      observation` independently in `workers/common/incident.py` (pg8000,
+      no `agent` import, same pattern as `workers/common/db.py`) -- same
+      SQL, same `tasks_active_incident_idx` dedupe logic, a genuinely
+      different caller writing through the same front door
+      `observe(node)` already uses. HMAC-SHA256 signature verification
+      (`hmac.compare_digest`, constant-time) protects `/webhooks/alerts`
+      instead of an API-Gateway key, matching LLD §11.2's own auth column
+      naming a different scheme for this one route specifically. The
+      metrics endpoint needs no DB role at all -- `ListMetrics` then
+      `GetMetricData` against CloudWatch directly, since `GetMetricData`
+      can't query "every dimension combo" in one call. **Stated plainly,
+      not glossed over: nothing in `agent/` publishes any `engram`-
+      namespace metric yet** (`agent/telemetry.py` still doesn't exist) --
+      the endpoint's plumbing is real and proven against real CloudWatch,
+      but every `engram`-namespace metric correctly comes back empty
+      until something publishes to it; `queue_depth`/`task_restarts` are
+      opt-in via env var for the same reason (no SQS queue or ECS service
+      exists yet), and `task_restarts`'s exact CloudWatch metric name
+      (`RunningTaskCount`) is itself flagged as an unverified best guess.
+      **Hit the exact same IAM-scoping wall twice more, each time
+      resolved by asking the user rather than working around it:** the
+      `EngramCdkDeploy` policy's Secrets Manager statement was scoped to
+      only `engram/approver-dsn-*`, so creating the two new secrets
+      (`engram/webhook-dsn`, `engram/webhook-hmac-secret`) failed with a
+      real `AccessDenied` first; widened to `engram/*` this time
+      specifically so a third round-trip won't be needed for future
+      secrets under this naming convention. A `LambdaLogsRead` statement
+      was added in the same pass, which paid off immediately: used it to
+      pull the real Lambda error logs confirming the webhooks endpoint's
+      first live test failed on exactly the predicted cause (the two
+      secrets not existing yet), not something else. **Both new routes
+      verified against the REAL deployed infrastructure, not mocks:**
+      metrics returned a real `200` with real (correctly empty) CloudWatch
+      data; webhooks returned a real `502` before its secrets existed
+      (exactly the expected failure, confirmed via the newly-granted log
+      access), then a real `200` after, with a real `task`/`observation`/
+      `entity` row confirmed by direct query (`trigger='webhook'`,
+      `task_type='incident'`), a real dedupe on a second identical call
+      (same `task_id`, new `observation_id`), and a real `401` on a
+      tampered signature. `workers/README.md` (new) and `infra/README.md`
+      (updated) record all of this for whoever extends this next.
+      **170 Python unit tests pass in total** (up from 147).
 OPEN (Phase 3, non-gating)  `agent/nodes/act_measure.py`'s own smoke test
       still uses `override_backup_gate=True` rather than the now-real
       backup-gate network path -- wiring a live `CloudApiAdapter` through
       an actual `act_measure` run is real follow-up, not done yet.
       `CCLOUD_TOKEN` hasn't been added as a GitHub Actions repo secret yet
       (local `.env` only). §8.4 crash-window reconciliation (W1-W4) not
-      implemented. The dashboard's `metrics`/`webhooks` Lambda endpoints
-      (LLD §11.2) and the lifecycle-worker Lambdas (`consolidator`/
-      `decayer`/`embedding_backfill`, LLD §9) are NOT built -- only
-      `approvals` exists in `workers/`/`infra/` so far. Memory Inspector's
-      similarity/citations gap (an earlier chunk) not closed. Migration
-      003 still blocked on a real prerequisite (seed corpus must exist
-      first, invariant #1) -- not a gap. `thread_id`/`task_id`
+      implemented. `agent/telemetry.py` still doesn't exist, so `GET
+      /metrics` has nothing real to show yet beyond empty series -- the
+      next real payoff from this chunk's work needs that module written
+      and actually calling CloudWatch PutMetricData from the agent's own
+      nodes. The lifecycle-worker Lambdas (`consolidator`/`decayer`/
+      `embedding_backfill`, LLD §9) are NOT built. The dashboard itself
+      has no metrics panel consuming `GET /metrics` yet -- the endpoint
+      exists and works, nothing in `dashboard/` calls it. Memory
+      Inspector's similarity/citations gap (an earlier chunk) not closed.
+      Migration 003 still blocked on a real prerequisite (seed corpus
+      must exist first, invariant #1) -- not a gap. `thread_id`/`task_id`
       reconciliation (`tasks.checkpoint_thread_id`) not wired -- nothing
       mints or persists a `thread_id` yet, since `main.py` (the SQS
-      consumer that would own that) doesn't exist. MCP/CloudWatch/ccloud
-      legs of `observe(node)` step 1 still unimplemented. 26257 is open
-      right now only because of the user's VPN -- treat it as still
+      consumer that would own that) doesn't exist -- note `POST
+      /webhooks/alerts` now provides a SECOND real way an incident task
+      gets created (`trigger='webhook'`), independent of the sweep path,
+      so this gap now affects two entry points, not one. MCP/CloudWatch/
+      ccloud legs of `observe(node)` step 1 still unimplemented. 26257 is
+      open right now only because of the user's VPN -- treat it as still
       blocked by default, not fixed.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session. No credential
-      or IAM gaps block Phase 3 work anymore -- the approvals path is
-      fully live end to end.)
+      or IAM gaps block Phase 3 work anymore -- approvals, metrics, and
+      webhooks are all fully live end to end.)
 ```
 
-**Next action, in order (Phase 3 continues):** (1) `metrics`/`webhooks` Lambda endpoints (LLD §11.2) and lifecycle-worker Lambdas (LLD §9), reusing the `engram-deploy` IAM identity and `infra/` CDK patterns now proven to work; (2) `main.py` (SQS consumer/entrypoint) -- mints a `thread_id`, reconciles it into `tasks.checkpoint_thread_id` (Phase 3 chunk 1's gap), and is also where a real (non-override) backup-gate call first gets exercised end to end; (3) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (4) the `gate→reason` re-plan edge, once a loop-prevention design exists.
+**Next action, in order (Phase 3 continues):** (1) `agent/telemetry.py` -- OTel spans + CloudWatch PutMetricData from the agent's own nodes, which is what would actually give `GET /metrics` real data to show; (2) `main.py` (SQS consumer/entrypoint) -- mints a `thread_id`, reconciles it into `tasks.checkpoint_thread_id` (Phase 3 chunk 1's gap, now doubly relevant with two incident-creation entry points), and is also where a real (non-override) backup-gate call first gets exercised end to end; (3) a dashboard metrics panel consuming the now-live `GET /metrics`; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the now-proven `infra/`/`engram-deploy` CDK pattern; (5) add `CCLOUD_TOKEN` as a GitHub repo secret for the CI path; (6) the `gate→reason` re-plan edge, once a loop-prevention design exists.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-12 — Session 33 · Built, tested, deployed, and live-verified `GET /metrics` and `POST /webhooks/alerts` -- the other two LLD §11.2 endpoints -- in the same live stack as the approvals Lambda.** A fifth least-privilege SQL role, `engram_webhook` (`db/migrations/007_webhook_role.sql`), closes the write path a webhook-driven incident needs: SELECT+INSERT on `tasks`, INSERT on `observations`, SELECT+INSERT+UPDATE on `entities`. **The entities grant surfaced a real, previously-unknown privilege requirement, caught live rather than assumed from reading the SQL**: `scripts/bootstrap_webhook_role.py`'s first attempt granted only INSERT+UPDATE on `entities` (matching what the `INSERT ... ON CONFLICT DO UPDATE` statement obviously writes) and failed with `InsufficientPrivilege: does not have SELECT privilege on relation entities` -- detecting the conflict in the first place requires reading the existing row, a requirement invisible from the SQL text alone. Fixed the migration and re-verified, 9/9. Wrote `workers/common/incident.py`: the exact same one-txn tasks+observations+entities insert `agent/memory/db.py`'s `insert_incident_observation` already does, reimplemented independently in pg8000 for the Lambda context (same dedupe-via-`tasks_active_incident_idx` logic, same rollback-then-fallback-SELECT control flow) -- a real, different caller writing through the same front door `observe(node)`'s internal sweep path uses, not a shortcut around it. `workers/webhooks/handler.py` verifies HMAC-SHA256 over the RAW request body (`hmac.compare_digest`, constant-time) against a per-deploy shared secret -- LLD §11.2's own auth column names a different scheme for this route specifically (not an API-Gateway key), so the CDK route was built with `api_key_required=False` and the Lambda does its own auth. Live-tested directly against the real memory cluster before writing any mocked test: 5/5 -- new incident, dedupe onto the same task with a fresh observation row, invalid signature, missing signature, missing field, all correct. `workers/metrics/handler.py` needs no DB role at all -- `ListMetrics` then `GetMetricData` against CloudWatch, since `GetMetricData` has no "all dimension combinations" mode; discovers whatever dimension combos actually exist for each LLD §12 metric name and fetches each one. **Stated plainly, not glossed over: nothing in `agent/` publishes any `engram`-namespace metric yet** -- `agent/telemetry.py` still doesn't exist -- so this endpoint's CloudWatch plumbing is real and later proven against real AWS, but every `engram` metric correctly comes back empty until something publishes to it; that is the honest current state, not a bug. `queue_depth`/`task_restarts` are opt-in via env var for the identical reason (no SQS queue or ECS service exists in this project yet), and `task_restarts`'s exact CloudWatch metric name (`RunningTaskCount`) is itself flagged in the code as an unverified best guess, never checked against a real ECS service. Refactored `workers/common/db.py`'s DSN-resolution boilerplate into a new shared `workers/common/config.py` (`resolve_secret`: env var first, else Secrets Manager) once a third caller (the webhook HMAC secret) needed the identical two-step lookup a third time -- reuse only introduced once a real third use case existed, not speculatively. Renamed the CDK stack's Python class from `ApprovalsStack` to `EngramApiStack` now that it holds three routes, not one -- confirmed this doesn't affect the deployed CloudFormation stack's identity (`infra/app.py`'s construct id string is what CloudFormation tracks, unchanged) before relying on it, not assumed safe. `cdk synth` (fully local) came back clean on the first real run, and inspecting the generated template confirmed both new Lambdas' IAM roles are correctly scoped: the metrics function's `cloudwatch:GetMetricData`/`ListMetrics` on `Resource: "*"` -- stated as CloudWatch's own genuine limitation (these two actions don't support resource-level ARN scoping in IAM at all, not a choice made here) -- and the webhooks function's Secrets Manager grant scoped to exactly its two secret ARNs. `cdk deploy` updated the SAME already-deployed `EngramApprovalsStack` in place (28 resource changes, approvals untouched) rather than replacing it, confirming the earlier rename assumption held. **Hit the exact same IAM-scoping wall twice more, each resolved by asking the user rather than working around it, exactly per this project's own standing rule for consequential AWS changes:** creating the two new Secrets Manager secrets failed under `engram-deploy` because the `EngramCdkDeploy` policy's Secrets Manager statement was scoped to only `engram/approver-dsn-*` -- handed the user the exact replacement policy JSON, widened this time to `engram/*` specifically so a third round-trip shouldn't be needed for future secrets under this naming convention, and added a `LambdaLogsRead` statement in the same pass. That log-read grant paid for itself immediately: used it to pull the real Lambda error logs and confirm the webhooks endpoint's first live `502` failed for exactly the predicted reason (the two secrets not existing yet), not something else -- a real diagnosis, not an assumption. **Both new routes then verified against the REAL deployed infrastructure, not mocks:** `GET /metrics` returned a real `200` with real (correctly empty) CloudWatch data; `POST /webhooks/alerts` returned a real `502` before its secrets existed, then a real `200` after, with a real `tasks`/`observations`/`entities` row set confirmed by direct query (`trigger='webhook'`, `task_type='incident'`), a real dedupe on a second identical call (same `task_id`, new `observation_id`), and a real `401` on a tampered signature -- every test row cleaned up afterward, confirmed by direct query. New `workers/README.md` and an updated `infra/README.md` record all of this, including both IAM widenings and the two real, non-bug AWS surprises (API-key propagation delay from last session; the expected pre-secret `502` this session) for whoever redeploys or extends this next. **170 Python unit tests pass in total** (up from 147) -- new `tests/test_workers_incident.py` (6), `tests/test_workers_webhooks.py` (8), and `tests/test_workers_metrics.py` (9).
 
 **2026-08-12 — Session 32 · `cdk deploy` actually run — the approvals Lambda + API Gateway are live in real AWS, verified end to end against the real infrastructure.** Picked up exactly where Session 31 left off: the user created a dedicated `engram-deploy` IAM user with a custom least-privilege policy (iteratively corrected together -- first attempt hit IAM's 2,048-character inline-policy limit because the policy was being created from the user's own page rather than as a standalone managed policy under IAM -> Policies, which has a 6,144-character limit; same JSON, different creation path, fixed it) scoped to CDK's default bootstrap naming convention -- deliberately NOT `AdministratorAccess`, keeping this project's least-privilege discipline intact per the user's own explicit "don't think about deadlines" instruction. **Both `cdk bootstrap` and `cdk deploy` succeeded on the very first real attempt with that scoped policy** -- a genuine, live confirmation the scoping was correct, not just plausible on paper. One real speed bump along the way, handled correctly rather than worked around: Claude Code's own safety classifier blocked the first `cdk deploy` attempt (real, billable, hard-to-reverse infrastructure creation) even after the user had directed every step leading up to it -- explained why to the user and asked directly rather than retrying silently or pretending the action succeeded; user approved the retry and it deployed cleanly. **Closed the `engram/approver-dsn` Secrets Manager gap from Session 31 for real**, using `engram-deploy`'s own scoped `secretsmanager:CreateSecret`/`PutSecretValue` permission -- confirmed separately that `engram-phase0` still correctly cannot do this (unchanged, not re-tested and assumed the same). Retrieved the real API key value via `aws apigateway get-api-key --include-value` and wrote both it and the real endpoint URL into `dashboard/.env.local` directly (values never printed to any log or terminal output), replacing the local shim as the default. **Live-verified twice, on purpose, not just once:** first a direct HTTP call against the real deployed endpoint -- 200/409/404/400 all correct -- which surfaced one genuinely informative AWS quirk: the very first request against a freshly created API key came back `403 Forbidden` at the API Gateway layer, never reaching the Lambda at all. Diagnosed correctly as a known ~30-second propagation delay for new API keys/usage plans rather than assumed to be a bug in the stack -- confirmed by simply retrying moments later, which succeeded cleanly. Second, the actual closing proof: seeded a real pending approval, opened the real dashboard in a real browser, clicked the real Approve button, and traced it all the way through -- Next.js proxy route to the real API Gateway to the real Lambda to a real `UPDATE approvals` -- confirmed directly by querying the database afterward: `status='approved'`, `decided_by='dashboard-user'`, `channel='dashboard'`, matching LLD §11.2's spec exactly, not approximately. Cleaned up every disposable task/action/approval row created during verification, confirmed by direct query rather than assumed. Deleted the temporary shell script holding plaintext deploy credentials once no longer needed. Updated `infra/README.md` (now records the live deployment, the working IAM policy, and the propagation-delay finding) and `dashboard/README.md` (now documents both the shim-based and real-AWS verification passes) for whoever redeploys or extends this next. No code changes this session -- documentation and real infrastructure only; all 147 Python unit tests remain passing, unaffected.
 
