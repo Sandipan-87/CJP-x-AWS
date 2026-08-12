@@ -1,23 +1,27 @@
-# Engram workers — Lambda functions behind the dashboard's API Gateway
+# Engram workers — Lambda functions behind the dashboard's API Gateway + the sweep enumerator
 
-[PLUMBER]. `design/02-low-level-design.md` §11.2. Only `approvals`, `metrics`, and `webhooks`
-exist here — the lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`) named
-in the LLD's directory tree are NOT built, out of scope so far.
+[PLUMBER]. `design/02-low-level-design.md` §11.2 (`approvals`/`metrics`/`webhooks`) and §5.1 step 1
+(`sweep_enumerator`). The lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`)
+named in the LLD's directory tree are NOT built, out of scope so far.
 
-**DEPLOYED LIVE** as of 2026-08-12 (`infra/`, stack `EngramApprovalsStack`). All three routes
-verified against the real deployed infrastructure, not just locally.
+**DEPLOYED LIVE** as of 2026-08-12 (`infra/`, stack `EngramApprovalsStack`). All three API-Gateway
+routes verified against the real deployed infrastructure, not just locally. `sweep_enumerator`
+(added 2026-08-13) is built, unit-tested, and wired into `EngramAgentStack`'s CDK, but its
+EventBridge rule is still `enabled=False` and it has not been deployed — see
+`infra/engram_infra/agent_stack.py`'s module docstring for exactly why.
 
 ## Layout
 
 ```
 workers/
   common/          # shared, no agent/ import (see common/db.py's own docstring for why)
-    db.py          # engram_approver + engram_webhook connection factories (pg8000)
+    db.py          # engram_approver + engram_webhook + engram_sweep_enumerator connection factories (pg8000)
     config.py      # "env var, else Secrets Manager" resolution, shared by db.py and webhooks
     incident.py    # the tasks+observations+entities one-txn insert, reimplemented for Lambda
-  approvals/handler.py   # POST /approvals/{approval_id}  -- API key
-  metrics/handler.py     # GET  /metrics?window=1h        -- API key
-  webhooks/handler.py    # POST /webhooks/alerts           -- HMAC signature, NOT an API key
+  approvals/handler.py         # POST /approvals/{approval_id}  -- API key
+  metrics/handler.py           # GET  /metrics?window=1h        -- API key
+  webhooks/handler.py          # POST /webhooks/alerts          -- HMAC signature, NOT an API key
+  sweep_enumerator/handler.py  # EventBridge (5min, still disabled) -> reads watched_queries -> SQS
 ```
 
 ## Why a separate DB role (and DSN) per Lambda
@@ -29,6 +33,9 @@ Same least-privilege discipline as every SQL role elsewhere in this project:
   requirement, not assumed**: `INSERT ... ON CONFLICT DO UPDATE` needs SELECT to detect the
   conflict in the first place, on top of INSERT+UPDATE for the two branches. Caught live via
   `scripts/bootstrap_webhook_role.py`'s own verification step, not from reading the SQL alone.
+- `engram_sweep_enumerator` (migration 008): SELECT on `watched_queries` only — read-only by
+  design, since populating/editing the registry is an operator action, not something the
+  automated sweep path should be able to do to itself.
 - `metrics` needs no DB role at all — it only talks to CloudWatch.
 
 ## Local testing

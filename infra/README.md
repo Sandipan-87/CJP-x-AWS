@@ -42,10 +42,14 @@ project's own standing rule for consequential/billable actions):**
    `CompleteLayerUpload`/`BatchGetImage` scoped to the `engram-agent` repository ARN from step 1.
 3. Run `.github/workflows/build-agent-image.yml` (`workflow_dispatch`) — builds & pushes the
    image, tagged `latest` and by git sha, into the repo from step 1.
-4. `cdk deploy EngramAgentStack` (from this directory, `engram-deploy` credentials) — creates a
+4. `python scripts/bootstrap_sweep_enumerator_role.py` (2026-08-13, requires migration
+   `008_watched_queries.sql` applied first) — provisions `engram_sweep_enumerator`'s password,
+   writes `ENGRAM_SWEEP_DSN` to `.env`, and attempts to push `engram/sweep-dsn` into Secrets
+   Manager (same `engram-phase0`-fails/`engram-deploy`-works split as every other secret here).
+5. `cdk deploy EngramAgentStack` (from this directory, `engram-deploy` credentials) — creates a
    dedicated `nat_gateways=0` VPC, the FIFO `engram-commands` queue + DLQ, an ECS cluster/
-   service/task definition pulling the image from step 3, and a DISABLED 5-minute EventBridge
-   sweep rule (see the stack's own docstring for why disabled: no sweep enumerator exists yet).
+   service/task definition pulling the image from step 3, the `engram-sweep-enumerator` Lambda
+   (`workers/sweep_enumerator/handler.py`), and a DISABLED 5-minute EventBridge rule targeting it.
 
 **`cdk synth EngramAgentStack` needs no AWS credentials** (confirmed — a fresh, dedicated VPC is
 created rather than looking up the account's default one, keeping this stack's synth-time
@@ -56,13 +60,20 @@ null-deserialization error, because `FargateTaskDefinition` only lazily creates 
 once something (the ECR image + log driver) actually needs one. Fixed by moving that grant after
 `add_container()`.
 
-**What's real vs. still needed, stated plainly:** the CDK stack, the Dockerfile, and the GitHub
-Actions build workflow are all written and `cdk synth`-verified; nothing has been deployed. The
-5-minute EventBridge sweep rule, even once deployed, stays `enabled=False` until a real sweep
-enumerator exists (LLD §5.1 step 1's still-unimplemented MCP/CloudWatch/ccloud collection legs) —
-manually publishing a real message to the queue, or invoking `agent/main.py`'s `process_message()`
-directly (as `scripts/smoke_test_main.py` already does, live), remains the only proven way to
-exercise the agent today.
+**What's real vs. still needed, stated plainly:** the CDK stack, the Dockerfile, the GitHub
+Actions build workflow, and (2026-08-13) the sweep enumerator Lambda are all written and `cdk
+synth`-verified; nothing has been deployed. The 5-minute EventBridge sweep rule now targets a
+REAL enumerator (reads `db/migrations/008_watched_queries.sql`'s registry, sends one real
+`agent/main.py`-schema SQS message per enabled row — see `agent_stack.py`'s own docstring for why
+this is a deliberately smaller substitute for the LLD's own MCP-based traffic discovery, which
+this project has never built a client for) but the rule STAYS `enabled=False` even after this
+Lambda exists: the registry starts empty, so enabling costs nothing on its own, but populating it
+with real rows starts a real, ongoing, unattended cost (real Cohere/Ollama calls on every tick
+that trips the anomaly threshold) — exactly the kind of consequential choice this project asks the
+user about first, not decides unilaterally. Manually publishing a real message to the queue, or
+invoking `agent/main.py`'s `process_message()` directly (as `scripts/smoke_test_main.py`/
+`scripts/smoke_test_resume.py` already do, live), remain the proven ways to exercise the agent
+until that decision is made.
 
 ---
 

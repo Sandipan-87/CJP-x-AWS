@@ -15,7 +15,7 @@ platform produces a working Lambda package, no cross-compilation step needed. Me
 assumed: connected with it against the real memory cluster (CockroachDB speaks the Postgres wire
 protocol) using `engram_approver`'s real credentials before writing anything that depends on it.
 
-Two separate connection factories, one per Lambda/role, each with its own credential resolution
+Three separate connection factories, one per Lambda/role, each with its own credential resolution
 (env var first for local testing, else AWS Secrets Manager -- HLD's `secret/engram/*` convention,
 never a plaintext Lambda environment variable in production):
   - `get_connection()` -- `engram_approver`, autocommit (every call is exactly one UPDATE/SELECT,
@@ -24,6 +24,8 @@ never a plaintext Lambda environment variable in production):
     `insert_incident_observation` needs explicit `commit()`/`rollback()` control across its
     multi-statement tasks+observations+entities transaction, the same way
     `agent/memory/db.py`'s version does over a single `pool.connection()` checkout.
+  - `get_sweep_connection()` -- `engram_sweep_enumerator`, autocommit (read-only, one SELECT per
+    invocation, `workers/sweep_enumerator/handler.py`).
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ DEFAULT_PORT = 26257
 
 _connection: dbapi.Connection | None = None
 _webhook_connection: dbapi.Connection | None = None
+_sweep_connection: dbapi.Connection | None = None
 
 
 def _connect(dsn: str, *, autocommit: bool) -> dbapi.Connection:
@@ -94,6 +97,31 @@ def get_webhook_connection() -> dbapi.Connection:
     dsn = resolve_secret("ENGRAM_WEBHOOK_DSN", "ENGRAM_WEBHOOK_SECRET_NAME")
     _webhook_connection = _connect(dsn, autocommit=False)
     return _webhook_connection
+
+
+def get_sweep_connection() -> dbapi.Connection:
+    """`engram_sweep_enumerator`, autocommit (read-only) -- see module docstring."""
+    global _sweep_connection
+    if _sweep_connection is not None and _is_alive(_sweep_connection):
+        return _sweep_connection
+    dsn = resolve_secret("ENGRAM_SWEEP_DSN", "ENGRAM_SWEEP_SECRET_NAME")
+    _sweep_connection = _connect(dsn, autocommit=True)
+    return _sweep_connection
+
+
+def list_enabled_watched_queries(conn: dbapi.Connection) -> list[dict]:
+    """`db/migrations/008_watched_queries.sql`'s registry -- the whole point of the sweep
+    enumerator: WHICH (scope_id, target_cluster_id, table_name, query_text) combos are worth
+    probing this tick. Returns plain dicts (not `agent/main.py`'s own `ProbeResult`/state
+    TypedDicts -- `workers/` never imports `agent/`, same split as everywhere else in this file).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT watched_query_id, scope_id, target_cluster_id, table_name, query_text "
+        "FROM watched_queries WHERE enabled = true"
+    )
+    columns = [d[0] for d in cur.description]
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
 def decide_approval(

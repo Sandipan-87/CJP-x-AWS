@@ -68,7 +68,13 @@ def build_metrics_package() -> str:
     return _build_package("metrics")
 
 
+def build_sweep_enumerator_package() -> str:
+    return _build_package("sweep_enumerator")
+
+
 if __name__ == "__main__":
-    for build_fn in (build_approvals_package, build_webhooks_package, build_metrics_package):
+    for build_fn in (
+        build_approvals_package, build_webhooks_package, build_metrics_package, build_sweep_enumerator_package,
+    ):
         path = build_fn()
         print(f"built {path}")

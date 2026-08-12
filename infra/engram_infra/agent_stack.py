@@ -45,15 +45,25 @@ architecture line names three schedules feeding "SQS engram-commands" (5m sweep,
 nightly decay), but LLD §9 independently describes consolidate/decay as separate, not-yet-built
 lifecycle-worker LAMBDAS with no SQS/agent-graph involvement at all -- and CLAUDE.md's own "Next
 action" list already tracks those as a distinct future item. This stack wires ONLY the 5-minute
-sweep rule. Its target payload is a real, main.py-schema-valid EXAMPLE message (proven processable
-by `scripts/smoke_test_main.py`'s own message shape) -- but the rule is created **disabled**
-(`enabled=False`), because no sweep ENUMERATOR exists anywhere in this codebase yet (the thing that
-would decide, every 5 minutes, WHICH scope/cluster/table/query is actually worth probing -- LLD
-§5.1 step 1's still-unimplemented MCP/CloudWatch/ccloud collection legs). Firing a fixed example
-message every 5 minutes forever would just manufacture a fake recurring "incident," not simulate
-a real sweep. Enabling this rule for a live demo, or replacing its target with a real enumerator
-Lambda, is real follow-up -- the plumbing exists and is provably correct, the decision logic
-upstream of it does not yet.
+sweep rule.
+
+**The rule's target is now a real enumerator Lambda (`workers/sweep_enumerator/handler.py`), not a
+fixed example message** -- CLAUDE.md's own Next-action list named this the actual blocker on ever
+flipping the rule on, since firing one hardcoded message every 5 minutes forever would just
+manufacture a fake recurring "incident," not simulate a real sweep. The enumerator reads
+`db/migrations/008_watched_queries.sql`'s `watched_queries` registry (an explicit, ops-maintained
+substitute for the LLD's own answer -- live MCP traffic discovery -- which this project has never
+built an MCP client for at all, a separate, larger, already-tracked gap) and sends one real
+`agent/main.py`-schema SQS message per enabled row. **The rule is still created `enabled=False`
+here, deliberately, even though the enumerator itself is real and live-verified**: with an EMPTY
+`watched_queries` registry (the default -- nothing seeds rows here or in any migration), enabling
+the rule is functionally harmless (the enumerator runs, finds zero candidates, enqueues nothing,
+costs one trivial Lambda invocation per tick) -- but flipping it on AND populating real rows
+together starts a real, ONGOING, unattended cost (real Cohere/Ollama calls every time a watched
+query trips the anomaly threshold, indefinitely, not a one-time action) -- exactly the kind of
+consequential choice this project's own standing rule asks to confirm with the user first, not
+decide unilaterally. Flipping `enabled=True` and/or seeding `watched_queries` rows is real,
+available follow-up, not blocked on any remaining code.
 """
 
 from __future__ import annotations
@@ -66,15 +76,19 @@ from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
+from build import build_sweep_enumerator_package
+
 DEFAULT_ECR_REPOSITORY_NAME = "engram-agent"
 DEFAULT_SECRET_NAME = "engram/agent-secrets"
 DEFAULT_IMAGE_TAG = "latest"
 DEFAULT_HEALTH_PORT = 8080
+DEFAULT_SWEEP_DSN_SECRET_NAME = "engram/sweep-dsn"
 
 # Every SECRET_ENV_KEYS field from scripts/bootstrap_agent_infra.py maps 1:1 to a container
 # env var of the SAME name -- agent/main.py already reads each of these via plain os.environ.
@@ -88,18 +102,6 @@ SECRET_ENV_KEYS = (
     "CCLOUD_TOKEN",
 )
 
-# A real, main.py-schema-valid message (agent/main.py's module docstring, decision #6) --
-# proven processable by scripts/smoke_test_main.py, not an invented shape. See module
-# docstring for why the rule that would send this is created disabled.
-EXAMPLE_SWEEP_MESSAGE = {
-    "scope_id": "REPLACE-WITH-REAL-SCOPE-ID",
-    "target_cluster_id": "REPLACE-WITH-REAL-TARGET-CLUSTER-UUID",
-    "table_name": "REPLACE-WITH-REAL-TABLE",
-    "query_text": "REPLACE-WITH-A-REAL-QUERY-TO-PROBE",
-    "trigger": "eventbridge",
-}
-
-
 class EngramAgentStack(cdk.Stack):
     def __init__(
         self,
@@ -109,6 +111,7 @@ class EngramAgentStack(cdk.Stack):
         ecr_repository_name: str = DEFAULT_ECR_REPOSITORY_NAME,
         secret_name: str = DEFAULT_SECRET_NAME,
         image_tag: str = DEFAULT_IMAGE_TAG,
+        sweep_dsn_secret_name: str = DEFAULT_SWEEP_DSN_SECRET_NAME,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -139,7 +142,7 @@ class EngramAgentStack(cdk.Stack):
         # Outbound-only by default (CDK's default security group already allows all egress,
         # no inbound rule added -- nothing needs to reach this task from outside the cluster).
 
-        self._add_sweep_rule(queue)
+        self._add_sweep_rule(queue, sweep_dsn_secret_name)
 
         cdk.CfnOutput(self, "QueueUrl", value=queue.queue_url)
         cdk.CfnOutput(self, "DeadLetterQueueUrl", value=dlq.queue_url)
@@ -241,18 +244,34 @@ class EngramAgentStack(cdk.Stack):
 
     # ---------------------------------------------------------------------- EventBridge
 
-    def _add_sweep_rule(self, queue: sqs.Queue) -> None:
-        """See module docstring's "EventBridge scope" paragraph for why this is `enabled=False`."""
+    def _add_sweep_rule(self, queue: sqs.Queue, sweep_dsn_secret_name: str) -> None:
+        """See module docstring's "EventBridge scope" paragraph for why the rule itself is still
+        `enabled=False` even though the enumerator Lambda it targets is real.
+        """
+        # Imports an ALREADY-EXISTING secret, same "CDK imports, something else provisions" split
+        # as every other secret in this project -- scripts/bootstrap_sweep_enumerator_role.py
+        # creates the DSN value, this stack never writes it.
+        sweep_secret = secretsmanager.Secret.from_secret_name_v2(self, "SweepDsnSecret", sweep_dsn_secret_name)
+        enumerator = lambda_.Function(
+            self, "SweepEnumeratorFunction",
+            function_name="engram-sweep-enumerator",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="sweep_enumerator.handler.handler",
+            code=lambda_.Code.from_asset(build_sweep_enumerator_package()),
+            timeout=Duration.seconds(30),
+            memory_size=256,
+            environment={
+                "ENGRAM_SWEEP_SECRET_NAME": sweep_dsn_secret_name,
+                "ENGRAM_QUEUE_URL": queue.queue_url,
+            },
+        )
+        sweep_secret.grant_read(enumerator)
+        queue.grant_send_messages(enumerator)
+
         events.Rule(
             self, "SweepRule",
             rule_name="engram-sweep-5min",
             schedule=events.Schedule.rate(Duration.minutes(5)),
-            enabled=False,  # no sweep enumerator exists yet -- see module docstring
-            targets=[
-                targets.SqsQueue(
-                    queue,
-                    message_group_id="engram-sweep-placeholder",
-                    message=events.RuleTargetInput.from_object(EXAMPLE_SWEEP_MESSAGE),
-                )
-            ],
+            enabled=False,  # real enumerator now exists -- still off by default, see module docstring
+            targets=[targets.LambdaFunction(enumerator)],
         )
