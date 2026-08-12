@@ -45,7 +45,7 @@ jobs:
       - id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push (tags: git sha + latest)
+      - name: "Build and push (tags: git sha + latest)"
         env:
           REGISTRY: ${{ steps.ecr-login.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
