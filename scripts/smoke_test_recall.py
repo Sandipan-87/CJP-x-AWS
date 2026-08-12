@@ -102,6 +102,23 @@ async def main(sslrootcert: str | None) -> int:
         no_match = await recall(db, f"{scope_id}-empty", query_vec)
         record("recall() on an unrelated scope_id returns empty, not an error", no_match == [])
 
+        print(f"\n{RULE}\nREGRESSION -- a NULL-embedding row (seed-then-backfill) must not crash recall\n{RULE}")
+        # Real bug, 2026-08-12: a live incident's second recall() call crashed with a plain
+        # TypeError ("0.45 * None") the moment an episode row with embedding=NULL (not yet
+        # backfilled) showed up as an ANN candidate -- recall_ann() returned similarity=None
+        # for it instead of excluding it. Fixed with `AND embedding IS NOT NULL`; this seeds
+        # the exact shape that broke it and proves both recall_ann() and the full pipeline
+        # now handle it cleanly.
+        null_embed_id = await db.insert_memory_item(
+            scope_id, "episode", "not yet backfilled", embedding=None, provenance={"note": "null-embedding"},
+        )
+        rows = await db.recall_ann(scope_id, query_vec, limit=10)
+        record("recall_ann excludes the NULL-embedding row", null_embed_id not in {str(r["item_id"]) for r in rows})
+        scored_with_null = await recall(db, scope_id, query_vec, incident_entities={entity_id}, top_k=5)
+        record("recall() does not crash with a NULL-embedding row present in scope", True)
+        record("recall() still excludes the NULL-embedding row from its own output",
+               null_embed_id not in {str(s["item_id"]) for s in scored_with_null})
+
     except Exception as exc:  # noqa: BLE001
         all_ok = False
         record("UNEXPECTED EXCEPTION", False, f"{type(exc).__name__}: {exc}")

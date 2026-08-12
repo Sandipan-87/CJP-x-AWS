@@ -442,6 +442,19 @@ class Database:
         yet written) is meant to be the only caller; a repo-wide grep CI
         check for stray `<=>` usage is the enforcement LLD §6.5 asks for,
         also not yet written — recorded here so it isn't forgotten.
+
+        **Real bug found live, 2026-08-12 (second incident against a scope
+        that already had an episode memory item), fixed here**: this query
+        had no `embedding IS NOT NULL` filter, so a "seed-then-backfill"
+        row (episode/procedure items get `embedding=NULL` until the
+        not-yet-written backfill worker fills them in — `gate.py`'s own
+        comment already named this) came back with `similarity=None`
+        (CockroachDB's `<=>` against a NULL operand is NULL, not an error)
+        — which crashed `agent/memory/scoring.py`'s `hybrid()` with a plain
+        `TypeError` the moment it tried `0.45 * None`, well before
+        `recall(node)` ever got to persist a decision row. A row with no
+        embedding can't be meaningfully ANN-ranked in the first place, so
+        excluding it here is the correct fix, not a workaround.
         """
         literal = _vector_literal(vec)  # bound 3x below — one %s per occurrence, not string-embedded
         async with self._pool.connection() as conn:
@@ -461,7 +474,7 @@ class Database:
                            1 - (embedding <=> %s::VECTOR(1024)) AS similarity,
                            (embedding <=> %s::VECTOR(1024)) AS distance
                     FROM memory_items
-                    WHERE scope_id = %s AND status = 'active'
+                    WHERE scope_id = %s AND status = 'active' AND embedding IS NOT NULL
                     ORDER BY embedding <=> %s::VECTOR(1024)
                     LIMIT %s
                     """,
