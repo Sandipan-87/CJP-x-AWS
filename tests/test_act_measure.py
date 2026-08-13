@@ -206,6 +206,58 @@ def test_failure_when_latency_does_not_improve():
     assert update["action"]["outcome"] == "failure"
 
 
+def test_failure_with_budget_left_replans_instead_of_ending():
+    """LLD §4's act_measure -> reason re-plan edge: a measured regression
+    with replan_count defaulting to 0 (MAX_REPLANS=2) goes back to reason
+    (node) instead of ending the incident on a change that didn't help.
+    """
+    db = _FakeDb()
+    probe = _FakeSqlProbe([10.0, 15.0])  # got WORSE
+    op = _FakeSqlOperator()
+
+    async def run():
+        return await act_measure(_base_state(), db, probe, op, backup_gate=_FakeBackupGate(True))
+
+    update = asyncio.run(run())
+    assert update["phase"] == "replan"
+    assert update["replan_count"] == 1
+    assert "did not improve" in update["replan_reason"]
+    assert update["proposal"] is None
+    # the already-applied DDL is never auto-rolled-back -- action still shows applied+failure
+    assert update["action"]["status"] == "applied"
+    assert update["action"]["outcome"] == "failure"
+
+
+def test_failure_with_no_budget_left_ends_normally():
+    """Same regression, but replan_count has already reached MAX_REPLANS
+    (2) -- this is the end of the incident."""
+    db = _FakeDb()
+    probe = _FakeSqlProbe([10.0, 15.0])  # got WORSE
+    op = _FakeSqlOperator()
+    state = _base_state(replan_count=2)
+
+    async def run():
+        return await act_measure(state, db, probe, op, backup_gate=_FakeBackupGate(True))
+
+    update = asyncio.run(run())
+    assert update["phase"] == "done"
+    assert update["measurement"]["outcome"] == "failure"
+    assert "replan_reason" not in update
+
+
+def test_success_never_replans_regardless_of_budget():
+    db = _FakeDb()
+    probe = _FakeSqlProbe([100.0, 10.0])  # improved
+    op = _FakeSqlOperator()
+    state = _base_state(replan_count=0)
+
+    async def run():
+        return await act_measure(state, db, probe, op, backup_gate=_FakeBackupGate(True))
+
+    update = asyncio.run(run())
+    assert update["phase"] == "done"
+
+
 def test_measured_dicts_never_contain_raw_plan_text():
     db = _FakeDb()
     probe = _FakeSqlProbe([100.0, 10.0])

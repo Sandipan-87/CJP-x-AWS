@@ -45,6 +45,12 @@ from agent.tools.sql_probe import SqlProbe
 DEFAULT_POLL_INTERVAL_S = 2.0        # LLD §5.4 step 3
 DEFAULT_TIMEOUT_S = 600.0            # LLD §2 config contract: ENGRAM_APPROVAL_TIMEOUT_S default
 RECIPE_VERSION = "v1"
+MAX_REPLANS = 2                      # LLD §4's gate -> reason re-plan edge, loop-prevention bound.
+                                      # Small on purpose, matching reason(node)'s own MAX_ROUNDS
+                                      # convention for "try again with feedback" -- not unlimited.
+                                      # Allows up to 3 total proposals per incident (1 initial + 2
+                                      # re-plans); a third straight rejection parks it rather than
+                                      # asking a fourth time.
 
 
 def _compute_idempotency_key(target_cluster_id: str, proposal: dict) -> str:
@@ -116,8 +122,32 @@ async def gate(
                 "phase": "gate",
             }
 
-        # rejected / expired -> outcome row (skipped) + episode memory + done (LLD §5.4 step 4)
+        # rejected / expired -> this action is skipped either way, LLD §5.4 step 4
         await db.update_remediation_status(action_id, "skipped", outcome="skipped")
+
+        # LLD §4's gate -> reason re-plan edge, now actually wired: a HUMAN REJECTION (not an
+        # expiry -- nobody was watching, so automatically retrying would just time out again for
+        # nothing) with re-plan budget left goes back to reason(node) for a genuinely different
+        # proposal instead of ending the incident here. `proposal` is cleared so act_measure/gate
+        # never see a stale one if something upstream forgets to check `phase` -- reason(node) is
+        # about to set a fresh one anyway.
+        replan_count = state.get("replan_count", 0)
+        if approval["status"] == "rejected" and replan_count < MAX_REPLANS:
+            replan_reason = f"a human reviewer rejected the proposed {proposal['action_kind']}"
+            if approval.get("comment"):
+                replan_reason += f" ({approval['comment']})"
+            return {
+                "approval": approval,
+                "action": {"action_id": action_id, "status": "skipped", "rendered_sql": rendered.sql},
+                "proposal": None,
+                "replan_count": replan_count + 1,
+                "replan_reason": replan_reason,
+                "phase": "replan",
+            }
+
+        # Terminal: expired, or rejected with no re-plan budget left -- outcome row already
+        # written above; record the episode now, since this really is the end of the road for
+        # this incident (LLD §5.4 step 4's own "episode memory + done").
         await db.insert_memory_item(
             state["scope_id"],
             "episode",

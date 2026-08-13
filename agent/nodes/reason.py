@@ -176,6 +176,17 @@ async def reason(
     observation = state["observations"][-1] if state.get("observations") else None
     context = _build_context_message(state)
     messages: list[dict] = [{"role": "user", "content": context}]
+    if state.get("replan_reason"):
+        # LLD §4's gate/act_measure -> reason re-plan edge: a rejected or measured-regression
+        # proposal already tried once, and this is a genuinely different graph-level re-entry,
+        # not one of this function's own intra-call repair rounds below -- without this, reason
+        # (node) would have no way to know its FIRST idea already failed and could just propose
+        # the identical thing again.
+        messages.append({
+            "role": "user",
+            "content": f"A previous remediation attempt for this incident did not succeed: "
+                       f"{state['replan_reason']}. Propose a DIFFERENT remediation this time.",
+        })
     citations = _citations_from_bundle(state.get("recall_bundle"))
 
     proposal: Proposal | None = None

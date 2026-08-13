@@ -61,6 +61,10 @@ from agent.tools.sql_operator import SqlOperator
 from agent.tools.sql_probe import ExplainResult, SqlProbe
 
 DEFAULT_BACKUP_WINDOW_HOURS = 24.0
+MAX_REPLANS = 2  # LLD §4's act_measure -> reason re-plan edge -- same bound and rationale as
+                  # agent/nodes/gate.py's own MAX_REPLANS (kept as a separate constant, not
+                  # imported from there, since the two nodes' loop-prevention decisions are
+                  # independent even though the number happens to match).
 
 
 def _extract_raw_query(observations: list[Observation]) -> str | None:
@@ -183,12 +187,36 @@ async def act_measure(
         dimensions={"scope_id": state["scope_id"], "task_id": state["task_id"]},
     )
 
+    measurement = {
+        "measured_before": _trim_explain(measured_before),
+        "measured_after": _trim_explain(measured_after),
+        "outcome": outcome,
+    }
+    applied_action = {**action, "status": "applied", "outcome": outcome}
+
+    # LLD §4's act_measure -> reason re-plan edge, now actually wired: a measured REGRESSION
+    # (latency didn't improve) with re-plan budget left goes back to reason(node) for a different
+    # proposal, rather than ending the incident on a change that provably didn't help. Stated
+    # limitation, not hidden: the already-applied DDL from THIS attempt is never automatically
+    # rolled back or dropped -- that's a real, separate, higher-risk decision (an automatic DROP
+    # INDEX) this session doesn't make; it simply stays applied while a different remediation is
+    # tried on top of it.
+    replan_count = state.get("replan_count", 0)
+    if outcome == "failure" and replan_count < MAX_REPLANS:
+        return {
+            "measurement": measurement,
+            "action": applied_action,
+            "proposal": None,
+            "replan_count": replan_count + 1,
+            "replan_reason": (
+                f"the applied {proposal.get('action_kind', 'remediation')} did not improve "
+                f"latency ({measured_before.latency_ms:.1f}ms -> {measured_after.latency_ms:.1f}ms)"
+            ),
+            "phase": "replan",
+        }
+
     return {
-        "measurement": {
-            "measured_before": _trim_explain(measured_before),
-            "measured_after": _trim_explain(measured_after),
-            "outcome": outcome,
-        },
-        "action": {**action, "status": "applied", "outcome": outcome},
+        "measurement": measurement,
+        "action": applied_action,
         "phase": "done",
     }

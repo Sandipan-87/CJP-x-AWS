@@ -1,22 +1,29 @@
 """Engram · agent/graph.py — LangGraph StateGraph assembly.  [BRAINS]
 
 design/02-low-level-design.md §4. **All five nodes the LLD names now
-exist** — the full loop is compiled and invocable:
+exist, and (2026-08-13) so does every edge the LLD names** — the full
+loop, including both re-plan paths, is compiled and invocable:
 
     observe ──► recall ──► reason ──► gate ──► act_measure ──► (done)
-      │                                 │
-      ▼                                 ▼
-    (no anomaly → done)     (reject/expire → done)
+      │                       ▲          │           │
+      ▼                       └──────────┴───────────┘
+    (no anomaly → done)     (reject, budget left / measurement fails, budget left → reason)
+                             (reject, no budget / expire → done)
 
-Both conditional edges are LLD §4's own: "observe → done if no anomaly,"
+The conditional edges are LLD §4's own: "observe → done if no anomaly,"
 "gate → done on reject/expiry, → reason (re-plan) if measurement fails."
-**The `gate → reason` re-plan edge on a measurement failure is NOT wired**
-— `act_measure` sets `outcome='failure'` in `state["action"]` on a
-measured regression (LLD §5.5) but returns normally rather than raising;
-nothing currently routes that back to `reason`. Stated as a real, scoped-
-out piece of the loop, not silently dropped: a re-plan cycle needs its own
-loop-prevention thinking (how many re-plans before giving up?) that hasn't
-been designed yet, so it isn't half-built here.
+**Closing the gap this file's own history carried since Session 26**: a
+rejection at `gate` OR a measured regression at `act_measure` now routes
+back to `reason` for a genuinely different proposal — but ONLY while
+re-plan budget remains (`agent/nodes/gate.py`/`agent/nodes/act_measure.py`'s
+own `MAX_REPLANS=2`, `state["replan_count"]` the loop-prevention counter
+this docstring previously said didn't exist yet). An `expiry` at `gate`
+never re-plans regardless of budget — nobody was watching to reject it,
+so retrying automatically would likely just time out again for nothing.
+`state["replan_reason"]` carries WHY the previous attempt didn't stick
+(the human's rejection comment, or the measured before/after latency) into
+`reason(node)`'s next prompt, so a re-plan is actually informed, not a
+blind repeat of the same proposal.
 
 A failed `reason` (exhausted repair rounds, `LLMSchemaError`) or a blocked
 `act_measure` (`BackupGateBlocked`) both raise rather than route anywhere —
@@ -92,11 +99,27 @@ def _route_after_observe(state: AgentState) -> str:
 
 
 def _route_after_gate(state: AgentState) -> str:
-    """LLD §4: "gate → done on reject/expiry." `gate(node)` returns
-    `phase='gate'` on approval (ready for `act_measure`) or `phase='done'`
-    on reject/expiry — see `agent/nodes/gate.py`.
+    """LLD §4: "gate → done on reject/expiry, → reason (re-plan) if
+    [it decides to]." `gate(node)` returns `phase='gate'` on approval
+    (ready for `act_measure`), `phase='replan'` on a rejection with re-plan
+    budget left (`agent/nodes/gate.py`'s `MAX_REPLANS`), or `phase='done'`
+    on expiry / a rejection with no budget left.
     """
-    return "act_measure" if state.get("phase") == "gate" else END
+    phase = state.get("phase")
+    if phase == "gate":
+        return "act_measure"
+    if phase == "replan":
+        return "reason"
+    return END
+
+
+def _route_after_act_measure(state: AgentState) -> str:
+    """LLD §4: "→ reason (re-plan) if measurement fails." `act_measure
+    (node)` returns `phase='replan'` on a measured regression with re-plan
+    budget left (`agent/nodes/act_measure.py`'s `MAX_REPLANS`), else
+    `phase='done'` regardless of success/failure.
+    """
+    return "reason" if state.get("phase") == "replan" else END
 
 
 def build_graph(
@@ -176,7 +199,9 @@ def build_graph(
     graph.add_conditional_edges("observe", _route_after_observe, {"recall": "recall", END: END})
     graph.add_edge("recall", "reason")
     graph.add_edge("reason", "gate")
-    graph.add_conditional_edges("gate", _route_after_gate, {"act_measure": "act_measure", END: END})
-    graph.add_edge("act_measure", END)  # gate→reason re-plan edge NOT wired — see module docstring
+    graph.add_conditional_edges(
+        "gate", _route_after_gate, {"act_measure": "act_measure", "reason": "reason", END: END}
+    )
+    graph.add_conditional_edges("act_measure", _route_after_act_measure, {"reason": "reason", END: END})
 
     return graph.compile(checkpointer=checkpointer)

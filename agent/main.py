@@ -314,6 +314,8 @@ def _initial_state(scope_id: str, target_cluster_id: str, trigger: str, probe_pa
         "error": None,
         "model_meta": {},
         "initial_probe": dict(probe_payload),
+        "replan_count": 0,
+        "replan_reason": None,
     }
 
 

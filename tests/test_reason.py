@@ -194,3 +194,39 @@ def test_reason_retries_when_model_answers_in_prose_with_no_tool_call():
     update = asyncio.run(run())
     assert update["phase"] == "reason"
     assert len(llm.calls) == 2
+
+
+def test_reason_includes_replan_reason_when_graph_level_re_entry():
+    """LLD §4's gate/act_measure -> reason re-plan edge: state['replan_reason']
+    (set by gate.py on a human rejection, or act_measure.py on a measured
+    regression) must reach the FIRST-round prompt, not just the intra-call
+    repair-round feedback (`test_reason_retries_with_feedback_...` above,
+    a completely different mechanism).
+    """
+    llm = _FakeLLM([_tool_call(columns=("customer_id",))])
+    db = _FakeDb()
+    state = _base_state()
+    state["replan_reason"] = "a human reviewer rejected the proposed create_index"
+
+    async def run():
+        return await reason(state, db, llm)
+
+    update = asyncio.run(run())
+    assert update["phase"] == "reason"
+    assert len(llm.calls) == 1
+    # the very first call already carries the re-plan context, not just round-2+ feedback
+    assert any(
+        "a human reviewer rejected the proposed create_index" in m.get("content", "")
+        for m in llm.calls[0]
+    )
+
+
+def test_reason_omits_replan_message_when_replan_reason_is_absent():
+    llm = _FakeLLM([_tool_call(columns=("customer_id",))])
+    db = _FakeDb()
+
+    async def run():
+        return await reason(_base_state(), db, llm)
+
+    asyncio.run(run())
+    assert len(llm.calls[0]) == 1  # just the base context message, no re-plan addendum

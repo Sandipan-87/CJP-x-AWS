@@ -73,6 +73,15 @@ class AgentState(TypedDict):
     measurement: dict | None           # TODO: Measurement lands with act_measure(node)
     error: dict | None                 # TODO: TypedError lands with error-handling wiring
     model_meta: dict                   # model_id, version, token usage per call
+    replan_count: int                  # LLD §4's gate/act_measure -> reason re-plan edge: how many
+                                        # times reason(node) has already been re-entered for this
+                                        # incident. Bounded by agent/nodes/gate.py's MAX_REPLANS --
+                                        # this is the loop-prevention counter CLAUDE.md's own OPEN
+                                        # list named as the reason this edge stayed unwired.
+    replan_reason: str | None          # why the previous attempt didn't stick (human rejection or
+                                        # a measured regression) -- fed to reason(node) as extra
+                                        # context so a re-plan is actually informed, not a blind
+                                        # repeat of the same proposal.
     initial_probe: dict | None         # NOT in the LLD's §3 listing — added for agent/graph.py
                                         # (LLD §4): a compiled LangGraph node only ever receives
                                         # `state`, so a sweep's raw ProbeResult (agent/nodes/

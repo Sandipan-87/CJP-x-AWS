@@ -119,11 +119,57 @@ def test_gate_approved_after_a_few_pending_polls():
     assert update["approval"]["status"] == "approved"
 
 
-def test_gate_rejected_writes_outcome_and_episode_then_done():
+def test_gate_rejected_with_budget_left_replans_instead_of_ending():
+    """LLD §4's gate -> reason re-plan edge: a fresh rejection (replan_count
+    defaults to 0, MAX_REPLANS=2) goes back to reason(node), not to done.
+    The action is still marked skipped (a true fact about THIS rejected
+    action), but no episode is recorded yet -- this isn't the end of the
+    incident.
+    """
     db = _FakeDb(["rejected"])
 
     async def run():
         return await gate(_base_state(), db, poll_interval_s=0.01, timeout_s=5.0)
+
+    update = asyncio.run(run())
+    assert update["phase"] == "replan"
+    assert update["action"]["status"] == "skipped"
+    assert update["proposal"] is None
+    assert update["replan_count"] == 1
+    assert "rejected" in update["replan_reason"]
+    assert len(db.remediation_updates) == 1
+    assert db.remediation_updates[0][1] == "skipped"
+    assert db.memory_items == []  # not the terminal outcome -- no episode yet
+    assert db.decide_calls == []  # rejected by a real decision, not a timeout
+
+
+def test_gate_rejected_includes_the_reviewers_comment_in_replan_reason():
+    db = _FakeDb([])
+    db._statuses = []  # overridden below via a custom poll_approval
+
+    async def poll_with_comment(approval_id):
+        return {"approval_id": approval_id, "status": "rejected", "comment": "wrong table entirely"}
+
+    db.poll_approval = poll_with_comment
+
+    async def run():
+        return await gate(_base_state(), db, poll_interval_s=0.01, timeout_s=5.0)
+
+    update = asyncio.run(run())
+    assert update["phase"] == "replan"
+    assert "wrong table entirely" in update["replan_reason"]
+
+
+def test_gate_rejected_with_no_budget_left_writes_outcome_and_episode_then_done():
+    """Same rejection, but replan_count has already reached MAX_REPLANS
+    (2) -- this really is the end of the incident now.
+    """
+    db = _FakeDb(["rejected"])
+    state = _base_state()
+    state["replan_count"] = 2
+
+    async def run():
+        return await gate(state, db, poll_interval_s=0.01, timeout_s=5.0)
 
     update = asyncio.run(run())
     assert update["phase"] == "done"

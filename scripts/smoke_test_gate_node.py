@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Engram · smoke test for agent/nodes/gate.py against the live memory cluster.  [BRAINS]
 
-Three real scenarios: (1) a human "approves" mid-poll by writing directly
+Four real scenarios: (1) a human "approves" mid-poll by writing directly
 to `approvals` while gate() is actually polling in real time -- proves the
 polling mechanism itself, not just the branch logic already proven by the
-scripted unit tests; (2) a rejection, confirming the real outcome write
-(remediation_actions.status='skipped') and the real episode memory row
-both actually land in the database; (3) calling insert_gate_decision a
-SECOND time with the SAME idempotency_key, confirming real reconciliation
-onto the existing row rather than a second ledger entry.
+scripted unit tests; (2) a rejection WITH re-plan budget left, confirming
+the real outcome write (remediation_actions.status='skipped') lands but
+`phase='replan'` is returned and NO episode is written yet -- LLD §4's
+gate -> reason re-plan edge (2026-08-13); (2b) a rejection with NO budget
+left (`replan_count` pre-set to `MAX_REPLANS`), confirming the real
+terminal path -- the episode memory row this scenario originally tested
+-- still lands correctly once re-plan budget is actually exhausted; (3)
+calling insert_gate_decision a SECOND time with the SAME idempotency_key,
+confirming real reconciliation onto the existing row rather than a second
+ledger entry.
 
     python scripts/smoke_test_gate_node.py --sslrootcert cluster-ca.crt
 """
@@ -31,7 +36,7 @@ except ImportError:
     pass
 
 from agent.memory.db import Database
-from agent.nodes.gate import _compute_idempotency_key, gate
+from agent.nodes.gate import MAX_REPLANS, _compute_idempotency_key, gate
 
 RULE = "-" * 72
 results: list[tuple[str, str]] = []
@@ -88,7 +93,7 @@ async def main(sslrootcert: str | None) -> int:
                f"phase={update1['phase']!r}")
         record("approval status is 'approved'", update1["approval"]["status"] == "approved")
 
-        print(f"\n{RULE}\nSCENARIO 2 — rejection writes a real outcome + episode row\n{RULE}")
+        print(f"\n{RULE}\nSCENARIO 2 — rejection WITH re-plan budget left routes to reason\n{RULE}")
         task_id_2 = await db.insert_task(scope_id, "incident", "manual")
         task_ids.append(task_id_2)
         state2 = {"task_id": task_id_2, "scope_id": scope_id,
@@ -96,18 +101,22 @@ async def main(sslrootcert: str | None) -> int:
                    "proposal": _proposal([f"region_{marker}"])}
         key2 = _compute_idempotency_key(state2["target_cluster_id"], state2["proposal"])
 
-        async def _reject_soon():
+        async def _reject_soon(key: str, comment: str) -> None:
             await asyncio.sleep(1.0)
-            row = await db.get_by_idempotency_key(key2)
+            row = await db.get_by_idempotency_key(key)
             approvals = await db._read(
                 "SELECT approval_id FROM approvals WHERE action_id = %s", (row["action_id"],)
             )
-            await db.decide_approval(approvals[0]["approval_id"], "smoke-test-human", "rejected")
+            await db.decide_approval(approvals[0]["approval_id"], "smoke-test-human", "rejected", comment=comment)
 
-        rejecter = asyncio.create_task(_reject_soon())
+        rejecter = asyncio.create_task(_reject_soon(key2, "smoke test rejection, budget left"))
         update2 = await gate(state2, db, poll_interval_s=0.5, timeout_s=10.0)
         await rejecter
-        record("rejected outcome routes to phase='done'", update2["phase"] == "done")
+        record("rejected WITH budget left routes to phase='replan', not 'done' (LLD §4)",
+               update2["phase"] == "replan", f"phase={update2['phase']!r}")
+        record("replan_count incremented to 1", update2.get("replan_count") == 1)
+        record("replan_reason carries the reviewer's comment",
+               "budget left" in (update2.get("replan_reason") or ""))
 
         action_row = await db.get_by_idempotency_key(key2)
         record("remediation_actions.status really is 'skipped' in the DB",
@@ -116,8 +125,33 @@ async def main(sslrootcert: str | None) -> int:
             "SELECT item_id FROM memory_items WHERE scope_id = %s AND class = 'episode'",
             (scope_id,),
         )
-        record("a real episode memory_item was written", len(episode_rows) == 1,
-               f"{len(episode_rows)} row(s)")
+        record("NO episode written yet -- this isn't the terminal outcome",
+               len(episode_rows) == 0, f"{len(episode_rows)} row(s)")
+
+        print(f"\n{RULE}\nSCENARIO 2b — rejection with NO re-plan budget left is terminal\n{RULE}")
+        task_id_2b = await db.insert_task(scope_id, "incident", "manual")
+        task_ids.append(task_id_2b)
+        state2b = {"task_id": task_id_2b, "scope_id": scope_id,
+                    "target_cluster_id": f"smoke-target-{marker}-b2",
+                    "proposal": _proposal([f"region2_{marker}"]),
+                    "replan_count": MAX_REPLANS}
+        key2b = _compute_idempotency_key(state2b["target_cluster_id"], state2b["proposal"])
+
+        rejecter2 = asyncio.create_task(_reject_soon(key2b, "smoke test rejection, budget exhausted"))
+        update2b = await gate(state2b, db, poll_interval_s=0.5, timeout_s=10.0)
+        await rejecter2
+        record("rejected with NO budget left routes to phase='done'",
+               update2b["phase"] == "done", f"phase={update2b['phase']!r}")
+
+        action_row_2b = await db.get_by_idempotency_key(key2b)
+        record("remediation_actions.status really is 'skipped' in the DB (2b)",
+               action_row_2b["status"] == "skipped", action_row_2b["status"])
+        episode_rows_2b = await db._read(
+            "SELECT item_id FROM memory_items WHERE scope_id = %s AND class = 'episode'",
+            (scope_id,),
+        )
+        record("a real episode memory_item was written once budget is exhausted",
+               len(episode_rows_2b) == 1, f"{len(episode_rows_2b)} row(s)")
 
         print(f"\n{RULE}\nSCENARIO 3 — real idempotent reconciliation, no second ledger entry\n{RULE}")
         decision_id, action_id_again, approval_id_again = await db.insert_gate_decision(
