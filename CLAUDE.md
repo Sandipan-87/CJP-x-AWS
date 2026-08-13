@@ -1349,12 +1349,96 @@ DONE (Phase 3, chunk 18)  **A live dashboard metrics panel built, plus a real
       `llm_token_usage` in older windows is still the pre-fix, billions-
       scale data** — the code fix only affects FUTURE Ollama calls; nothing
       retroactively repairs already-recorded CloudWatch datapoints. **The
-      deployed ECS agent still runs the pre-fix image** — the code fix
-      exists in the repo and passes tests, but hasn't been rebuilt/
-      redeployed this session (a real, live AWS action, asked about
-      separately rather than bundled unilaterally into this chunk, per this
-      project's own standing rule). 197 Python unit tests pass in total (up
-      from 196).
+      deployed ECS agent still runs the pre-fix image as of when this chunk
+      was written** — RESOLVED same session, see chunk 19. 197 Python unit
+      tests pass in total (up from 196).
+
+DONE (Phase 3, chunk 19)  **The `llm_token_usage` fix actually shipped to
+      the live agent, the sweep-enumerator infra deployed, and the LLD §4
+      gate/act_measure → reason re-plan edge wired, live-verified, and
+      unit-tested end to end -- all in one user-directed sequence,
+      2026-08-13.** User explicitly authorized the rebuild+redeploy
+      ("costs 0 CockroachDB RUs and negligible AWS change") and separately
+      authorized deploying the sweep-enumerator infra while keeping the
+      rule itself `enabled=False`. Pushed this session's 9 accumulated
+      commits to `origin/main` (asked first, per this project's own
+      standing rule for shared-remote actions) so `build-agent-image.yml`
+      had something to build from; the workflow succeeded in 46s, the new
+      image (digest `sha256:2179736c...`) confirmed landed in ECR via the
+      `engram-ecr-push` identity's `BatchGetImage` (`engram-deploy` itself
+      still lacks `ecr:DescribeImages`, an old, low-priority gap, not
+      re-opened this session). `ecs update_service(forceNewDeployment=
+      True)` rolled the service (PRIMARY deployment COMPLETED, old task
+      DRAINED) -- confirmed via `ecs:DescribeTasks` that the new task's
+      own `imageDigest` matches the freshly pushed one EXACTLY, and its
+      real startup logs show a full clean boot (DB reachable, Cohere
+      1024-dim confirmed, Ollama reachable, lease round-trip OK, health
+      endpoint listening) -- the `llm_token_usage` fix is now live, not
+      just committed. Separately, `cdk deploy EngramAgentStack` (chunk
+      17's sweep-enumerator Lambda + retargeted EventBridge rule)
+      succeeded cleanly (9/9 resources, ~130s): the Lambda now exists for
+      real, the rule shows `UPDATE_COMPLETE` -- confirmed still
+      `State: DISABLED` by the fact that `cdk deploy` only ever applies
+      exactly the template `cdk synth` already showed with that value,
+      not independently re-verified via `events:DescribeRule` itself
+      (`engram-deploy` lacks that read permission too, a known class of
+      gap, not re-opened this session for a low-value confirmation).
+      **The re-plan edge itself**: `agent/state.py` gained
+      `replan_count`/`replan_reason`. `agent/nodes/gate.py` and `agent/
+      nodes/act_measure.py` each gained their own `MAX_REPLANS=2` (kept as
+      two separate constants, not shared, even though the value matches --
+      the two nodes' loop-prevention decisions are independent). A HUMAN
+      REJECTION at `gate` with re-plan budget left now returns
+      `phase='replan'` (action still marked `skipped`, but NO episode
+      memory written yet -- that's deferred to whichever attempt is
+      actually terminal); an EXPIRY never re-plans regardless of budget,
+      since nobody was watching to reject it in the first place, and
+      auto-retrying would likely just time out again for nothing. A
+      MEASURED REGRESSION at `act_measure` (latency didn't improve) with
+      budget left does the same. **Stated limitation, not hidden**: a
+      failed `act_measure` attempt's already-applied DDL is never
+      auto-rolled-back or dropped -- a real, separate, higher-risk decision
+      this session doesn't make; it just stays applied while a different
+      remediation is tried on top of it. `reason(node)` now reads
+      `state["replan_reason"]` (the human's rejection comment, or the
+      measured before/after latency) as an extra FIRST-round message, so a
+      re-plan is actually informed -- distinct from that same function's
+      own pre-existing intra-call repair-round feedback loop (a completely
+      different mechanism, for a completely different failure class:
+      schema validation / falsification mismatch WITHIN one `reason()`
+      call, not a graph-level re-entry). `agent/graph.py`'s
+      `_route_after_gate` gained a third branch (`"replan"` -> `"reason"`)
+      and a new `_route_after_act_measure` conditional edge replaces the
+      previous unconditional `act_measure -> END` -- this is the literal
+      edge CLAUDE.md's own history has named unwired since Session 26,
+      closed now that a loop-prevention design exists. **11 new/updated
+      unit tests** across `tests/test_state` (implicit via the others),
+      `tests/test_graph.py` (+4: routing for both new branches),
+      `tests/test_gate.py` (+2 new, 1 rewritten: replan-with-budget,
+      replan-includes-comment, exhausted-budget-is-terminal -- the
+      PRE-EXISTING "single rejection -> done" test was rewritten, not left
+      to silently fail, since a single rejection now correctly re-plans by
+      default), `tests/test_act_measure.py` (+3: replan-with-budget,
+      exhausted-is-terminal, success-never-replans), `tests/test_reason.py`
+      (+2: replan_reason reaches the first-round prompt, absent when
+      unset). **Live-verified against the real memory cluster**
+      (`scripts/smoke_test_gate_node.py`, rewritten scenario 2 + new
+      scenario 2b, 12/12): a real rejection with budget genuinely returns
+      `phase='replan'` with zero episode rows written; a second real
+      rejection with `replan_count` pre-set to `MAX_REPLANS` genuinely
+      reaches the terminal path, episode row confirmed written. **Not
+      done this session, stated rather than assumed**: no live run
+      exercised the re-plan edge through the actual COMPILED GRAPH (only
+      `gate(node)` called directly, matching this smoke test's own
+      pre-existing scope) -- the conditional-edge wiring itself is
+      unit-tested (`test_graph.py`) and uses the exact same `add_
+      conditional_edges` mechanism already proven live for every other
+      edge in this graph, so this is a stated, deliberate verification
+      boundary, not an oversight. This session's re-plan-edge commit has
+      NOT yet been pushed/rebuilt/redeployed to the live ECS agent (a
+      separate ask from the `llm_token_usage` redeploy above, made at a
+      different point in the same session) -- see Next-action list.
+      208 Python unit tests pass in total (up from 197).
 
 OPEN (Phase 3, non-gating)  **Update, chunk 17**: a real sweep enumerator now
       exists (`workers/sweep_enumerator/handler.py` + `watched_queries`
@@ -1474,7 +1558,7 @@ BLOCKING  **RU budget, discovered 2026-08-13 -- treat as real and tight for the
 
 **RU-frugality is now a standing constraint on every item below** (see §6's new BLOCKING entry, 2026-08-13): `engram-sandbox-target` is capped at 35,000,000 RU with ~24-26M already consumed, so prefer chunks needing no/minimal live CockroachDB interaction, and if a live check IS needed, use small (thousand-row, not million-row) scratch data.
 
-**Next action, in order (Phase 3 continues):** (1) DONE 2026-08-13: `cloudwatch:GetMetricData`/`ListMetrics` granted and verified live; DONE 2026-08-13: dashboard metrics panel built and live-verified in a real browser (chunk 18) -- both closed this session, see §6; (2) decide whether to rebuild+redeploy the ECS agent image to pick up chunk 18's `llm_token_usage` fix (`agent/providers/ollama_cloud_llm.py`) -- low-cost (GitHub Actions build is free, ECS redeploy's own startup self-tests are tiny real calls, not a meaningful RU/API cost) but a real live-AWS action, asked about separately rather than bundled into the chunk that found the bug; (3) user has explicitly decided to keep the sweep rule `enabled=False` for now (2026-08-13 RU-triage conversation) -- whether to `cdk deploy EngramAgentStack` at all (to get the new sweep-enumerator Lambda live, rule still off) remains a separate, still-open, not-yet-asked decision, possibly worth bundling with (2) into one redeploy; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern -- touches real (currently small-volume) DB rows, keep any live verification data small; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists -- a live test would re-run the graph, budget accordingly; (6) low-priority: `scripts/smoke_test_main.py`'s own `_approve_when_ready` scopes its poll by `target_cluster_id` only (chunk 16 found and fixed the same latent bug in a new script) -- the shared sandbox target cluster now has enough accumulated historical `remediation_actions` rows that a future run of that specific script could pick up a stale action and spuriously time out; scope it by `task_id` like chunk 16's script does, next time that file is touched.
+**Next action, in order (Phase 3 continues):** (1) DONE 2026-08-13 (chunks 18-19, same session): `cloudwatch:GetMetricData`/`ListMetrics` granted+verified; dashboard metrics panel built+live-verified; `llm_token_usage` fix rebuilt+redeployed to the live ECS agent (confirmed via matching image digest + clean startup logs); sweep-enumerator infra deployed via `cdk deploy EngramAgentStack` (rule confirmed still `enabled=False`); the LLD §4 gate/act_measure → reason re-plan edge designed, wired, unit-tested (11 new tests), and live-verified against the real memory cluster at the node level -- see §6 for all of this; (2) push + rebuild + redeploy AGAIN to ship the re-plan-edge commit itself to the live ECS agent -- made after the `llm_token_usage` redeploy in the same session, not yet asked about separately; (3) a live run of the re-plan edge through the actual COMPILED GRAPH (chunk 19 only verified `gate(node)` directly, matching its smoke test's pre-existing scope) -- would need a real rejection followed by a real second approval, similar in shape to the "it remembers"/"it survives" live tests; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern -- touches real (currently small-volume) DB rows, keep any live verification data small; (5) low-priority: `scripts/smoke_test_main.py`'s own `_approve_when_ready` scopes its poll by `target_cluster_id` only (chunk 16 found and fixed the same latent bug in a new script) -- the shared sandbox target cluster now has enough accumulated historical `remediation_actions` rows that a future run of that specific script could pick up a stale action and spuriously time out; scope it by `task_id` like chunk 16's script does, next time that file is touched.
 
 ---
 
