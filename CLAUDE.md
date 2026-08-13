@@ -1517,6 +1517,95 @@ OPEN (Phase 3, non-gating)  **Update, chunk 17**: a real sweep enumerator now
       wired to `db.py`'s hardcoded 60s lease SQL. 26257 is open right now
       only because of the user's VPN -- treat it as still blocked by
       default, not fixed.
+DONE (Phase 3, chunk 20)  **The re-plan edge (chunk 19's design) shipped to
+      the live ECS agent and verified live through the ACTUAL COMPILED
+      GRAPH end to end, 2026-08-13 -- closes Next-action item (2) AND item
+      (3) from the prior chunk's own list in one session.** User directed
+      the exact sequence: push the re-plan commits, rebuild via `build-
+      agent-image.yml`, force an ECS redeploy, then fire a real anomalous
+      incident through the live queue, reject the first proposal, confirm
+      a re-plan, approve the second proposal, confirm resolution. Pushed
+      commits `dece966`/`a244014` (already local from chunk 19), rebuilt
+      (`sha256:769b2961...`), force-redeployed `engram-agent` service --
+      confirmed via `ecs:DescribeTasks` matching digest + clean startup
+      logs (DB/Cohere/Ollama/lease all reachable). **A real, immediate
+      obstacle, handled by asking rather than pushing through**: building
+      the live test scenario needs a query that trips the 1000ms anomaly
+      threshold as MEASURED BY THE DEPLOYED TASK -- chunk 14/Session 40's
+      own finding is that this specific target cluster is fast enough
+      from an AWS-co-located caller that ~1.5M rows were needed, which the
+      Claude Code auto-mode safety classifier itself blocked (a real,
+      RU-consuming write against the live, budget-capped cluster) before
+      it ran. Asked the user directly rather than overriding the block;
+      **user's own suggested fix, adopted verbatim**: temporarily lower
+      `agent/nodes/observe.py`'s `DEFAULT_LATENCY_THRESHOLD_MS` from
+      1000.0 to 50.0, ship that via the same push/rebuild/redeploy cycle,
+      run the test against a tiny (50k, later 200k row) scratch table,
+      then revert and redeploy again before finishing -- committed,
+      pushed, rebuilt (`sha256:7af71834...`), redeployed, confirmed. A
+      50,000-row table measured 41ms (just under 50ms -- close but not
+      quite); scaled to 200,000 rows, remeasured at 145ms, comfortably
+      over. Sent a real incident message to the live `engram-commands
+      .fifo` queue; the deployed task classified it `task_type='incident'`
+      for real and proposed `CREATE INDEX ... (customer_id)` -- matching
+      the real optimizer recommendation, citing a real prior memory item
+      at similarity 0.611. **Rejected it for real** (a direct `UPDATE
+      approvals ... WHERE status='pending'`, the same CAS pattern `gate
+      (node)`'s own `decide_approval` uses) and watched the live task
+      route back to `reason` -- a genuinely DIFFERENT second proposal
+      appeared (`ANALYZE public...`, not a repeat of the rejected index),
+      informed by the rejection comment, exactly as `reason(node)`'s
+      `replan_reason` first-round message is designed to do -- confirmed
+      via `decisions.reasoning`, not assumed from the outcome alone: no
+      second `recall` decision fired, confirming the edge routes `gate ->
+      reason` directly, skipping `observe`/`recall`, per chunk 19's design.
+      **Approved the second proposal for real**; the live task proceeded
+      to `act_measure`, applied the real `ANALYZE` DDL via `SqlOperator`,
+      and measured a real, honest, UNPLANNED result: `outcome='failure'`
+      (143.0ms -> 155.0ms -- `ANALYZE` alone cannot fix a missing-index
+      full scan, a genuinely correct measurement, not a test artifact).
+      **This, in turn, live-fired `act_measure`'s OWN re-plan edge for
+      the first time ever** (chunk 19 built it but only unit-tested it,
+      never watched it fire against a real measured regression) -- a
+      THIRD `reason` decision appeared, and the model, now informed by
+      "the applied analyze_table did not improve latency," correctly
+      reasoned its way back to the structurally correct fix
+      (`create_index` on `customer_id` again, same table/columns as
+      attempt 1). **This produced the single most informative real
+      finding of the session, not a bug**: because this third proposal's
+      `action_kind`+`parameters` are byte-identical to the FIRST (already-
+      rejected) proposal, `_compute_idempotency_key` hashed to the exact
+      same value, and `db.insert_gate_decision` (invariant #4/#6's own
+      "reconcile against reality, never duplicate" rule) correctly
+      reconciled onto the EXISTING, already-`rejected` approval instead of
+      creating a third pending one -- confirmed directly: zero pending
+      approvals ever existed for this task after the second decision, so
+      no third human decision was ever needed or possible. `gate(node)`'s
+      own rejected-branch then re-checked `replan_count` (now 2, having
+      been incremented once by the human rejection and once by
+      `act_measure`'s regression) against its `MAX_REPLANS=2` and
+      correctly found no budget left, terminating the incident with a
+      real episode memory item ("Remediation for create_index... was
+      rejected at the gate") and `tasks.status='completed'`. **Net result:
+      BOTH re-plan triggers (a human gate rejection AND a measured
+      act_measure regression) fired live through the actual compiled
+      graph in ONE incident, the idempotency-key dedup and the
+      loop-prevention bound were both exercised for real and both
+      behaved correctly, and the system terminated cleanly rather than
+      looping or duplicating -- more thorough coverage than the original
+      ask, though the specific incident's own outcome ended in a correct,
+      intentional `failure` rather than a `success` (the objectively
+      correct fix was never actually approved, by design of this test).**
+      Cleaned up: dropped the 200k-row scratch table (target cluster
+      `defaultdb` confirmed empty afterward), deleted the two disposable
+      local scripts used to build/poll it (neither committed). Reverted
+      `DEFAULT_LATENCY_THRESHOLD_MS` to 1000.0, re-ran the full unit suite
+      (208/208 unchanged), committed, pushed, rebuilt
+      (`sha256:bced5c3a...`), redeployed a final time, and re-confirmed
+      the running task's digest + a clean startup log -- the production
+      threshold is live again, not left lowered. **208 Python unit tests
+      pass in total, unchanged** -- this chunk was pure live verification
+      plus two temporary/reverted constant edits, no new code.
 BLOCKING  Time. (26257 currently open via VPN; the underlying squid block is
       unchanged, so don't assume it stays open next session. No credential
       or IAM gaps block Phase 3 work anymore -- approvals, metrics, and
@@ -1558,13 +1647,15 @@ BLOCKING  **RU budget, discovered 2026-08-13 -- treat as real and tight for the
 
 **RU-frugality is now a standing constraint on every item below** (see §6's new BLOCKING entry, 2026-08-13): `engram-sandbox-target` is capped at 35,000,000 RU with ~24-26M already consumed, so prefer chunks needing no/minimal live CockroachDB interaction, and if a live check IS needed, use small (thousand-row, not million-row) scratch data.
 
-**Next action, in order (Phase 3 continues):** (1) DONE 2026-08-13 (chunks 18-19, same session): `cloudwatch:GetMetricData`/`ListMetrics` granted+verified; dashboard metrics panel built+live-verified; `llm_token_usage` fix rebuilt+redeployed to the live ECS agent (confirmed via matching image digest + clean startup logs); sweep-enumerator infra deployed via `cdk deploy EngramAgentStack` (rule confirmed still `enabled=False`); the LLD §4 gate/act_measure → reason re-plan edge designed, wired, unit-tested (11 new tests), and live-verified against the real memory cluster at the node level -- see §6 for all of this; (2) push + rebuild + redeploy AGAIN to ship the re-plan-edge commit itself to the live ECS agent -- made after the `llm_token_usage` redeploy in the same session, not yet asked about separately; (3) a live run of the re-plan edge through the actual COMPILED GRAPH (chunk 19 only verified `gate(node)` directly, matching its smoke test's pre-existing scope) -- would need a real rejection followed by a real second approval, similar in shape to the "it remembers"/"it survives" live tests; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern -- touches real (currently small-volume) DB rows, keep any live verification data small; (5) low-priority: `scripts/smoke_test_main.py`'s own `_approve_when_ready` scopes its poll by `target_cluster_id` only (chunk 16 found and fixed the same latent bug in a new script) -- the shared sandbox target cluster now has enough accumulated historical `remediation_actions` rows that a future run of that specific script could pick up a stale action and spuriously time out; scope it by `task_id` like chunk 16's script does, next time that file is touched.
+**Next action, in order (Phase 3 continues):** (1) DONE 2026-08-13 (chunks 18-19): `cloudwatch:GetMetricData`/`ListMetrics` granted+verified; dashboard metrics panel built+live-verified; `llm_token_usage` fix rebuilt+redeployed; sweep-enumerator infra deployed (rule still `enabled=False`); the LLD §4 re-plan edge designed, wired, unit-tested, live-verified at the node level. (2) DONE 2026-08-13 (chunk 20): re-plan-edge commit pushed, rebuilt, redeployed to the live ECS agent. (3) DONE 2026-08-13 (chunk 20): a live run of the re-plan edge through the actual COMPILED GRAPH, via a real incident/reject/re-plan/approve/act_measure cycle over the real SQS queue -- both re-plan triggers (human rejection, measured regression) fired for real, idempotency dedup and the loop-prevention bound both confirmed correct. (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern -- touches real (currently small-volume) DB rows, keep any live verification data small; (5) low-priority: `scripts/smoke_test_main.py`'s own `_approve_when_ready` scopes its poll by `target_cluster_id` only (chunk 16 found and fixed the same latent bug in a new script) -- the shared sandbox target cluster now has enough accumulated historical `remediation_actions` rows that a future run of that specific script could pick up a stale action and spuriously time out; scope it by `task_id` like chunk 16's script does, next time that file is touched. (6) optional: a supplementary live run where the FIRST proposal is approved directly (skipping the reject/re-plan dance) to see the re-plan-tested incident type resolve with `outcome='success'` on screen -- chunk 20's own test deliberately exercised the re-plan MECHANISM and never approved the objectively-correct fix, so no `success` outcome exists yet for this specific query shape; not needed for correctness (success-path `create_index` is already proven repeatedly in chunks 14/15/41), only useful if the demo wants this exact scenario to end positively.
 
 ---
 
 ## 7. Changelog
 
 One entry per session, reverse-chronological. **Entries are never deleted** — long forms and Sessions 1–3 live in `docs/changelog-archive.md`.
+
+**2026-08-13 — Session 43 · The LLD §4 re-plan edge shipped to the live ECS agent and verified end to end through the actual compiled graph — both re-plan triggers fired for real in one incident, plus a genuinely useful safety-classifier intervention along the way.** User directed the exact sequence: push chunk 19's already-committed re-plan-edge commits, rebuild via `build-agent-image.yml`, force an ECS redeploy, then fire a real anomalous incident through the live SQS queue, reject the first proposal, confirm the graph routes back to `reason` with a refined second proposal, approve it, and confirm resolution to `act_measure`. Push/rebuild/redeploy went cleanly (confirmed via matching `ecs:DescribeTasks` image digest and clean startup logs, the established pattern from every prior redeploy this project has done). Building the live test scenario hit a real obstacle: tripping the production 1000ms anomaly threshold as measured by the deployed task (not this dev machine) needs roughly the ~1.5M-row table chunk 14/Session 40 already established this specific target cluster requires — a real, RU-consuming write against the RU-budget-capped cluster, and the Claude Code auto-mode safety classifier itself blocked the script before it ran. Rather than override or route around the block, explained the tradeoff to the user and asked; the user's own suggested alternative — temporarily lower `DEFAULT_LATENCY_THRESHOLD_MS` from 1000.0 to 50.0, ship it through the same rebuild/redeploy cycle, test cheaply, then revert and redeploy again — was adopted verbatim. This meant three full push→rebuild→redeploy cycles this session instead of one, each verified independently via matching image digests and clean startup logs. A 50,000-row scratch table measured 41ms against the lowered threshold (just under); scaled to 200,000 rows and remeasured at 145ms, comfortably over. Sent a real incident message to `engram-commands.fifo`; the live task classified it as a genuine incident and proposed `CREATE INDEX ... (customer_id)`, citing a real prior memory item at similarity 0.611 — matching the real optimizer recommendation. Rejected it directly via the same CAS `UPDATE approvals ... WHERE status='pending'` pattern `gate(node)`'s own `decide_approval` uses, and watched the live task route back to `reason`: a genuinely different second proposal (`ANALYZE`, not a repeat of the rejected index) appeared, confirmed via `decisions.reasoning` to have been informed by the rejection comment, with no second `recall` decision — confirming the edge routes `gate → reason` directly, skipping `observe`/`recall`, exactly as chunk 19 designed it. Approved the second proposal; the live task proceeded to `act_measure`, applied the real `ANALYZE` DDL, and measured a real, informative, unplanned outcome: `outcome='failure'` (143.0ms → 155.0ms — `ANALYZE` alone cannot fix a missing-index full scan; a correct measurement, not a test defect). **This live-fired `act_measure`'s own re-plan edge for the first time ever** (chunk 19 built and unit-tested it but never watched it trigger against a real measured regression) — a third `reason` decision appeared, and the model, now informed that `analyze_table` didn't help, correctly reasoned back to the structurally correct fix: `create_index` on `customer_id` again, byte-identical in `action_kind`+`parameters` to the very first (already-rejected) proposal. Because the two are identical, `_compute_idempotency_key` hashed to the same value, and `db.insert_gate_decision` — invariant #4/#6's own "reconcile against reality, never duplicate" rule — correctly reconciled onto the existing, already-`rejected` approval instead of creating a third pending one; confirmed directly that zero pending approvals ever existed after the second decision, so no third human decision was possible or needed. `gate(node)`'s rejected-branch logic then re-checked `replan_count` (now 2, incremented once by the human rejection and once by `act_measure`'s regression) against `MAX_REPLANS=2`, found no budget left, and terminated the incident cleanly with a real episode memory item and `tasks.status='completed'`. Net result: both re-plan triggers (human rejection, measured regression) fired live through the actual compiled graph in one incident, idempotency dedup and the loop-prevention bound were both exercised for real and both behaved correctly — broader coverage than the literal ask, even though this specific incident ended in a correct, intentional `failure` rather than `success` (the objectively correct fix was deliberately never approved, by the shape of this test, not by mistake). Cleaned up: dropped the scratch table (target cluster confirmed empty afterward), deleted both disposable local scripts (neither was committed), reverted the threshold to 1000.0, re-ran the full unit suite (208/208 unchanged), and pushed/rebuilt/redeployed a final time, re-confirming the running task's digest and a clean startup log — the production threshold is live again, not left lowered. 208 Python unit tests pass in total, unchanged — this session was pure live verification plus two temporary, fully-reverted constant edits, no new permanent code.
 
 **2026-08-13 — Session 42 · Checkpoint-resume now actually skips re-completed nodes on redelivery — closes the #1 item on this file's own Next-action list, left open since Session 41 proved kill-and-resume was correct but not efficient.** `agent/memory/db.py` gained a small `get_task_status()` read. `agent/main.py` gained `_should_resume()`, called right after `insert_task()`'s dedupe and before the status gets overwritten to `"running"`: it resumes via `graph.ainvoke(None, config=config)` instead of a fresh `_initial_state()` only when BOTH (a) the dedupe landed on a task whose status was already `"running"` (a prior attempt crashed mid-run) AND (b) a real LangGraph checkpoint with actual progress exists for the thread (`channel_versions` non-empty, read directly from the installed `langgraph==1.2.10` source rather than assumed from docs — the same internal signal LangGraph's own `_loop.py` uses for its `is_resuming` gate). Neither condition alone is sufficient, and both failure modes are real, not hypothetical: status alone would wrongly try to resume a previously-COMPLETED incident that happens to share the same fingerprint-derived `thread_id` (the "it remembers" recall-hit path is exactly this case — a new `task_id`, an old, finished checkpoint on the same thread); checkpoint-existence alone would silently no-op on the narrow race where a process dies before ever calling `ainvoke` once. `Runtime` gained a `checkpointer` field (`None` default, fully backward compatible). 9 new unit tests in `tests/test_main.py` (13 total) cover all four cases (resume, not-running, no-checkpoint-progress race, no-checkpointer). 166 unit tests pass in this dev environment (up from 162). **Live-verified end to end with no AWS/ECS redeploy needed** — a real cancelled `graph.ainvoke()` against the real memory/target clusters leaves behind exactly what a real container kill would (a task stuck at `status='running'` with real checkpoint progress), which is all `_should_resume` needs to see. New `scripts/smoke_test_resume.py`: 17/17 on the clean run, after finding and fixing two real bugs in the TEST itself (not the fix): first, swapping `runtime.llm` after `build_runtime()` returned had no effect, because `agent/graph.py` closes over the `llm` object at graph-compile time — fixed by monkeypatching the `complete` method in place on the same shared instance instead. Second, the concurrent approval poller (same pattern as the existing `smoke_test_main.py`) queried `remediation_actions` scoped only by `target_cluster_id`, which this project's shared sandbox target cluster has now accumulated real historical rows for across many sessions — it picked up a stale action, the real new approval sat un-decided, and `gate(node)` genuinely (and correctly) expired waiting for it; fixed by scoping the poller and the script's own assertions by `task_id`. Flagged, not fixed: `smoke_test_main.py`'s own `_approve_when_ready` likely has this same latent scoping gap (see Next-action list, item 6) — not touched this session since that file wasn't otherwise part of this change. The clean run proved the actual point directly, not by inference: `reason` made exactly ONE real Ollama call across both invocations combined (confirmed via the in-place-patched call counter), every node's `decisions` row exists exactly once total, `observe` didn't re-run either (one `observations` row), and the episode still completed correctly — one real `CREATE INDEX` confirmed via `SHOW INDEXES`, one `remediation_actions` row (`outcome='success'`, no duplicate), lease cleanly released. Test scratch data was fully cleaned up (cascade-deleting `decisions`/`remediation_actions`/`observations`/`approvals` via the schema's own `ON DELETE CASCADE` on `tasks`, plus checkpoints/memory_items/embedding_cache) and confirmed removed. This is a real efficiency fix, not a correctness fix — Session 41 already proved the exactly-once guarantee holds at the DB layer regardless of what LangGraph itself skips; this closes the wasted-re-execution cost that session explicitly flagged as the remaining gap. Committed in two commits (code + docs), then continued in the same session onto the next Next-action item.
 
