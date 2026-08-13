@@ -40,12 +40,15 @@ pulled, not pushed, so there is no request to route. ECS's own container-level `
 uses) gets LLD's actual goal -- detect an unhealthy task, replace it -- without an ALB's real
 ongoing cost for zero functional benefit here.
 
-**EventBridge scope, deliberately narrow, stated not silently expanded**: CLAUDE.md §2's top-level
-architecture line names three schedules feeding "SQS engram-commands" (5m sweep, 1h consolidate,
-nightly decay), but LLD §9 independently describes consolidate/decay as separate, not-yet-built
-lifecycle-worker LAMBDAS with no SQS/agent-graph involvement at all -- and CLAUDE.md's own "Next
-action" list already tracks those as a distinct future item. This stack wires ONLY the 5-minute
-sweep rule.
+**EventBridge scope**: CLAUDE.md §2's top-level architecture line names three schedules feeding
+"SQS engram-commands" (5m sweep, 1h consolidate, nightly decay), but LLD §9 independently
+describes consolidate/decay/embedding_backfill as separate lifecycle-worker LAMBDAS with no SQS/
+agent-graph involvement at all -- they never touch the queue this stack's own `AgentCommandsQueue`
+guards. This stack wires the 5-minute sweep rule (`_add_sweep_rule`) AND, as of the session that
+closed CLAUDE.md's own "lifecycle-worker Lambdas" Next-action item, the three §9 lifecycle rules
+(`_add_lifecycle_rules`: 1h consolidate, nightly decay, nightly embedding backfill) -- all four
+rules are created `enabled=False`, for the same "real, ongoing, unattended cost once enabled"
+reason stated in each `_add_*_rule(s)` method's own docstring.
 
 **The rule's target is now a real enumerator Lambda (`workers/sweep_enumerator/handler.py`), not a
 fixed example message** -- CLAUDE.md's own Next-action list named this the actual blocker on ever
@@ -82,13 +85,22 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
-from build import build_sweep_enumerator_package
+from build import (
+    build_consolidator_package,
+    build_decayer_package,
+    build_embedding_backfill_package,
+    build_sweep_enumerator_package,
+)
 
 DEFAULT_ECR_REPOSITORY_NAME = "engram-agent"
 DEFAULT_SECRET_NAME = "engram/agent-secrets"
 DEFAULT_IMAGE_TAG = "latest"
 DEFAULT_HEALTH_PORT = 8080
 DEFAULT_SWEEP_DSN_SECRET_NAME = "engram/sweep-dsn"
+DEFAULT_CONSOLIDATOR_DSN_SECRET_NAME = "engram/consolidator-dsn"
+DEFAULT_DECAYER_DSN_SECRET_NAME = "engram/decayer-dsn"
+DEFAULT_EMBEDDING_BACKFILL_DSN_SECRET_NAME = "engram/embedding-backfill-dsn"
+DEFAULT_COHERE_SECRET_NAME = "engram/cohere-api-key"
 
 # Every SECRET_ENV_KEYS field from scripts/bootstrap_agent_infra.py maps 1:1 to a container
 # env var of the SAME name -- agent/main.py already reads each of these via plain os.environ.
@@ -112,6 +124,10 @@ class EngramAgentStack(cdk.Stack):
         secret_name: str = DEFAULT_SECRET_NAME,
         image_tag: str = DEFAULT_IMAGE_TAG,
         sweep_dsn_secret_name: str = DEFAULT_SWEEP_DSN_SECRET_NAME,
+        consolidator_dsn_secret_name: str = DEFAULT_CONSOLIDATOR_DSN_SECRET_NAME,
+        decayer_dsn_secret_name: str = DEFAULT_DECAYER_DSN_SECRET_NAME,
+        embedding_backfill_dsn_secret_name: str = DEFAULT_EMBEDDING_BACKFILL_DSN_SECRET_NAME,
+        cohere_secret_name: str = DEFAULT_COHERE_SECRET_NAME,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -143,6 +159,10 @@ class EngramAgentStack(cdk.Stack):
         # no inbound rule added -- nothing needs to reach this task from outside the cluster).
 
         self._add_sweep_rule(queue, sweep_dsn_secret_name)
+        self._add_lifecycle_rules(
+            consolidator_dsn_secret_name, decayer_dsn_secret_name,
+            embedding_backfill_dsn_secret_name, cohere_secret_name,
+        )
 
         cdk.CfnOutput(self, "QueueUrl", value=queue.queue_url)
         cdk.CfnOutput(self, "DeadLetterQueueUrl", value=dlq.queue_url)
@@ -274,4 +294,120 @@ class EngramAgentStack(cdk.Stack):
             schedule=events.Schedule.rate(Duration.minutes(5)),
             enabled=False,  # real enumerator now exists -- still off by default, see module docstring
             targets=[targets.LambdaFunction(enumerator)],
+        )
+
+    # ---------------------------------------------------------------------- lifecycle workers
+
+    def _add_lifecycle_rules(
+        self,
+        consolidator_dsn_secret_name: str,
+        decayer_dsn_secret_name: str,
+        embedding_backfill_dsn_secret_name: str,
+        cohere_secret_name: str,
+    ) -> None:
+        """design/02-low-level-design.md §9's three memory-janitor Lambdas -- `consolidator`
+        (EventBridge 1h), `decayer` (nightly), `embedding_backfill` (nightly + on-demand; "on
+        demand" needs no separate infra, any Lambda can already be invoked directly, e.g. via the
+        console or CLI). Same "reuse the sweep-rule pattern" CLAUDE.md's own Next-action list
+        asked for: each gets its own least-privilege DB role + DSN secret (migration 009's
+        `engram_consolidator`/`engram_decayer`/`engram_embedding_backfill`, imported here by name,
+        never created by this stack -- the same "CDK imports, something else provisions" split as
+        every other secret in this project) and no VPC/queue access at all -- these only ever talk
+        to CockroachDB Cloud and, for one of the three, `api.cohere.com`.
+
+        **A single shared `engram/cohere-api-key` secret, not a copy inside each Lambda's own
+        DSN secret**: only `embedding_backfill` actually needs it (one small, single-value secret,
+        matching this project's `engram/sweep-dsn`/`engram/webhook-dsn` single-value convention).
+        `consolidator` deliberately does NOT get it -- its own handler docstring (simplification
+        #1) reuses already-stored embeddings rather than making a fresh Cohere call, and `decayer`
+        never touches embeddings at all; granting either the secret would be an unused,
+        speculative permission this project's least-privilege discipline argues against.
+
+        **All three rules are created `enabled=False`, deliberately, same reasoning as
+        `_add_sweep_rule`'s own rule**: `embedding_backfill` makes real, metered Cohere API calls
+        every time it runs, and `consolidator`/`decayer` both write real `procedures`/
+        `memory_items` rows -- turning any of these on starts a real, ONGOING, unattended cost/
+        write pattern, exactly the kind of consequential choice this project's standing rule asks
+        to confirm with the user first, not decide unilaterally. Flipping `enabled=True` for any
+        of the three is real, available follow-up, not blocked on any remaining code.
+        """
+        consolidator_secret = secretsmanager.Secret.from_secret_name_v2(
+            self, "ConsolidatorDsnSecret", consolidator_dsn_secret_name,
+        )
+        decayer_secret = secretsmanager.Secret.from_secret_name_v2(
+            self, "DecayerDsnSecret", decayer_dsn_secret_name,
+        )
+        embedding_backfill_secret = secretsmanager.Secret.from_secret_name_v2(
+            self, "EmbeddingBackfillDsnSecret", embedding_backfill_dsn_secret_name,
+        )
+        cohere_secret = secretsmanager.Secret.from_secret_name_v2(self, "CohereApiKeySecret", cohere_secret_name)
+
+        consolidator = lambda_.Function(
+            self, "ConsolidatorFunction",
+            function_name="engram-consolidator",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="consolidator.handler.handler",
+            code=lambda_.Code.from_asset(build_consolidator_package()),
+            timeout=Duration.seconds(300),  # LLD §9: "consolidator 300 s" -- the one Lambda here
+                                              # with a non-default timeout, per-scope ANN clustering
+                                              # over potentially many episodes
+            memory_size=256,
+            environment={
+                "ENGRAM_CONSOLIDATOR_SECRET_NAME": consolidator_dsn_secret_name,
+                # No COHERE_API_KEY_SECRET_NAME here -- handler.py's own docstring (simplification
+                # #1) never makes a fresh embedding call, see migration 009's matching comment.
+            },
+        )
+        consolidator_secret.grant_read(consolidator)
+
+        decayer = lambda_.Function(
+            self, "DecayerFunction",
+            function_name="engram-decayer",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="decayer.handler.handler",
+            code=lambda_.Code.from_asset(build_decayer_package()),
+            timeout=Duration.seconds(60),
+            memory_size=256,
+            environment={"ENGRAM_DECAYER_SECRET_NAME": decayer_dsn_secret_name},
+        )
+        decayer_secret.grant_read(decayer)
+
+        embedding_backfill = lambda_.Function(
+            self, "EmbeddingBackfillFunction",
+            function_name="engram-embedding-backfill",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="embedding_backfill.handler.handler",
+            code=lambda_.Code.from_asset(build_embedding_backfill_package()),
+            timeout=Duration.seconds(60),
+            memory_size=256,
+            environment={
+                "ENGRAM_EMBEDDING_BACKFILL_SECRET_NAME": embedding_backfill_dsn_secret_name,
+                "COHERE_API_KEY_SECRET_NAME": cohere_secret_name,
+            },
+        )
+        embedding_backfill_secret.grant_read(embedding_backfill)
+        cohere_secret.grant_read(embedding_backfill)
+
+        events.Rule(
+            self, "ConsolidateRule",
+            rule_name="engram-consolidate-1h",
+            schedule=events.Schedule.rate(Duration.hours(1)),  # LLD §9: "EventBridge 1 h"
+            enabled=False,  # see module note above
+            targets=[targets.LambdaFunction(consolidator)],
+        )
+        events.Rule(
+            self, "DecayRule",
+            rule_name="engram-decay-nightly",
+            schedule=events.Schedule.rate(Duration.days(1)),  # LLD §9: "EventBridge nightly"
+            enabled=False,
+            targets=[targets.LambdaFunction(decayer)],
+        )
+        events.Rule(
+            self, "EmbeddingBackfillRule",
+            rule_name="engram-embedding-backfill-nightly",
+            schedule=events.Schedule.rate(Duration.days(1)),  # LLD §9: "nightly + on-demand" --
+                                                                 # "on-demand" needs no separate
+                                                                 # infra, see method docstring
+            enabled=False,
+            targets=[targets.LambdaFunction(embedding_backfill)],
         )

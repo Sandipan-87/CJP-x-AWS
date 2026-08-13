@@ -72,9 +72,22 @@ def build_sweep_enumerator_package() -> str:
     return _build_package("sweep_enumerator")
 
 
+def build_embedding_backfill_package() -> str:
+    return _build_package("embedding_backfill")
+
+
+def build_decayer_package() -> str:
+    return _build_package("decayer")
+
+
+def build_consolidator_package() -> str:
+    return _build_package("consolidator")
+
+
 if __name__ == "__main__":
     for build_fn in (
         build_approvals_package, build_webhooks_package, build_metrics_package, build_sweep_enumerator_package,
+        build_embedding_backfill_package, build_decayer_package, build_consolidator_package,
     ):
         path = build_fn()
         print(f"built {path}")

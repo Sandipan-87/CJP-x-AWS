@@ -10,8 +10,12 @@
   service that actually run `agent/main.py`. **Built + `cdk synth` clean, NOT yet deployed** — see
   its own section below for exactly what's real vs. still needed before `cdk deploy`.
 
-The lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`) named in the LLD's
-directory tree are still NOT built, out of scope so far for either stack.
+The lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9) are now
+built, unit-tested, and wired into `EngramAgentStack` (`_add_lifecycle_rules`) — three new
+least-privilege DB roles (`db/migrations/009_lifecycle_roles.sql`) are already applied live and
+`scripts/bootstrap_lifecycle_roles.py` has live-verified all three privilege boundaries, but the
+Lambdas themselves have NOT been deployed and their EventBridge rules stay `enabled=False`, same
+standing rule as the sweep rule below.
 
 ## `EngramAgentStack` — SQS + EventBridge + ECS Fargate for `agent/main.py`
 
@@ -46,10 +50,32 @@ project's own standing rule for consequential/billable actions):**
    `008_watched_queries.sql` applied first) — provisions `engram_sweep_enumerator`'s password,
    writes `ENGRAM_SWEEP_DSN` to `.env`, and attempts to push `engram/sweep-dsn` into Secrets
    Manager (same `engram-phase0`-fails/`engram-deploy`-works split as every other secret here).
+4b. `python scripts/bootstrap_lifecycle_roles.py` (requires migration `009_lifecycle_roles.sql`
+   applied first — already run live this session) — provisions
+   `engram_embedding_backfill`/`engram_decayer`/`engram_consolidator`'s passwords, writes their
+   three `ENGRAM_*_DSN` vars to `.env`, and attempts to push `engram/embedding-backfill-dsn` /
+   `engram/decayer-dsn` / `engram/consolidator-dsn` into Secrets Manager (same
+   `engram-phase0`-fails/`engram-deploy`-works split). **Already run live this session — 15/18
+   checks passed, the 3 "failures" being the expected `secretsmanager:CreateSecret`
+   `AccessDenied` under `engram-phase0`; every privilege-boundary check passed, including a real
+   fix along the way, see below.**
 5. `cdk deploy EngramAgentStack` (from this directory, `engram-deploy` credentials) — creates a
    dedicated `nat_gateways=0` VPC, the FIFO `engram-commands` queue + DLQ, an ECS cluster/
    service/task definition pulling the image from step 3, the `engram-sweep-enumerator` Lambda
-   (`workers/sweep_enumerator/handler.py`), and a DISABLED 5-minute EventBridge rule targeting it.
+   (`workers/sweep_enumerator/handler.py`) plus the three lifecycle Lambdas
+   (`engram-consolidator`/`engram-decayer`/`engram-embedding-backfill`), and four DISABLED
+   EventBridge rules targeting them (5-minute sweep, 1h consolidate, nightly decay, nightly
+   embedding backfill).
+
+**A real, previously-unknown CockroachDB behavior, caught live by
+`scripts/bootstrap_lifecycle_roles.py`'s own verification step, not assumed from the SQL alone**:
+inserting into a table with a nullable FK column requires `SELECT` on the REFERENCED table even
+when that column is omitted from the INSERT (and so is implicitly `NULL`) — CockroachDB still
+checks the constraint's privilege boundary, not just its value. `engram_consolidator`'s own
+INSERTs into `procedures`/`memory_items` never set `created_by`/`entity_id`, but both columns are
+real FKs (to `tasks`/`entities` respectively), so migration 009 grants `SELECT` on both tables
+too — confirmed by a real `InsufficientPrivilege` error on each before the grants existed, then a
+clean pass after. See migration 009's own comment for the exact reasoning.
 
 **`cdk synth EngramAgentStack` needs no AWS credentials** (confirmed — a fresh, dedicated VPC is
 created rather than looking up the account's default one, keeping this stack's synth-time
@@ -61,8 +87,12 @@ once something (the ECR image + log driver) actually needs one. Fixed by moving 
 `add_container()`.
 
 **What's real vs. still needed, stated plainly:** the CDK stack, the Dockerfile, the GitHub
-Actions build workflow, and (2026-08-13) the sweep enumerator Lambda are all written and `cdk
-synth`-verified; nothing has been deployed. The 5-minute EventBridge sweep rule now targets a
+Actions build workflow, the sweep enumerator Lambda (2026-08-13), and the three lifecycle-worker
+Lambdas (`consolidator`/`decayer`/`embedding_backfill`) are all written and `cdk synth`-verified;
+nothing has been deployed. Unlike the sweep enumerator, the lifecycle workers' own DB roles ARE
+already live (migration 009 applied, `scripts/bootstrap_lifecycle_roles.py` run, both against the
+real memory cluster) — deploying the Lambdas themselves is the only remaining step for them. The
+5-minute EventBridge sweep rule now targets a
 REAL enumerator (reads `db/migrations/008_watched_queries.sql`'s registry, sends one real
 `agent/main.py`-schema SQS message per enabled row — see `agent_stack.py`'s own docstring for why
 this is a deliberately smaller substitute for the LLD's own MCP-based traffic discovery, which
