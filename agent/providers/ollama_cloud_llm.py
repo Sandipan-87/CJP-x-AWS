@@ -159,9 +159,18 @@ class OllamaCloudLLM(LLMProvider):
             message = payload.get("message", {}) if isinstance(payload, dict) else {}
             content = _strip_think_tags(str(message.get("content") or ""))
             tool_calls = _parse_tool_calls(message)
+            # Only the two real TOKEN COUNT fields -- `total_duration` is deliberately excluded.
+            # Real bug, found live via the dashboard's llm_token_usage chart (2026-08-13):
+            # `total_duration` is Ollama's own call latency in NANOSECONDS (~8-9 billion for a
+            # real ~8-9s call), and `reason(node)` sums every numeric field in `usage` into
+            # `llm_token_usage` -- including it there silently turned "token usage" into "call
+            # duration in nanoseconds," visible in CloudWatch as a metric in the billions instead
+            # of a plausible per-call token count. Latency is already correctly, separately
+            # measured by `reason(node)` itself via `time.perf_counter()` (`llm_latency_ms`) --
+            # `total_duration` here would only ever be a redundant, wrongly-unit'd duplicate of it.
             usage = {
                 k: payload[k]
-                for k in ("eval_count", "prompt_eval_count", "total_duration")
+                for k in ("eval_count", "prompt_eval_count")
                 if isinstance(payload, dict) and k in payload
             }
             return LLMResult(text=content, tool_calls=tool_calls, usage=usage)

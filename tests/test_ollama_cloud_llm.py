@@ -23,11 +23,11 @@ def _client_with(handler) -> httpx.AsyncClient:
                               transport=httpx.MockTransport(handler))
 
 
-def _chat_response(content: str = "", tool_calls: list | None = None) -> httpx.Response:
+def _chat_response(content: str = "", tool_calls: list | None = None, **extra_top_level) -> httpx.Response:
     message: dict = {"content": content}
     if tool_calls is not None:
         message["tool_calls"] = tool_calls
-    return httpx.Response(200, json={"message": message})
+    return httpx.Response(200, json={"message": message, **extra_top_level})
 
 
 def test_strip_think_tags_removes_them():
@@ -131,6 +131,25 @@ def test_500_raises_timeout_error_after_retries():
 
     with pytest.raises(LlmTimeoutError):
         asyncio.run(run())
+
+
+def test_usage_excludes_total_duration_but_keeps_token_counts():
+    """Real bug, found live via the dashboard's llm_token_usage chart (2026-08-13):
+    `total_duration` is Ollama's own call latency in NANOSECONDS (billions for a real multi-
+    second call) -- `reason(node)` sums every numeric field in `usage`, so including it here
+    silently turned "token usage" into "call duration in nanoseconds" in the real CloudWatch
+    metric. `usage` must carry only the two real token-count fields.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _chat_response(content="OK", eval_count=42, prompt_eval_count=17, total_duration=8_500_000_000)
+
+    async def run():
+        async with OllamaCloudLLM(client=_client_with(handler)) as llm:
+            return await llm.complete("system", [], [])
+
+    result = asyncio.run(run())
+    assert result.usage == {"eval_count": 42, "prompt_eval_count": 17}
+    assert "total_duration" not in result.usage
 
 
 def test_401_is_never_retried():
