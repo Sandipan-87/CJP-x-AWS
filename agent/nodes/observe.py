@@ -42,11 +42,7 @@ from agent.state import AgentState, Observation
 from agent.telemetry import Telemetry, elapsed_ms, maybe_record, maybe_span, set_attr
 from agent.tools.sql_probe import ExplainResult
 
-DEFAULT_LATENCY_THRESHOLD_MS = 50.0  # §5.1 step 3's "threshold" — TEMPORARILY lowered from 1000.0
-# for the live re-plan-edge verification (see CLAUDE.md changelog) so a small,
-# RU-cheap scratch table trips the incident path instead of the ~1.5M-row table
-# chunk 14/session 40 needed at the production 1000.0 value. MUST be restored
-# to 1000.0 and redeployed before the actual submission demo.
+DEFAULT_LATENCY_THRESHOLD_MS = 1000.0  # §5.1 step 3's "threshold" — tunable, not measured yet
 
 # Collapses runs of digits and single/double-quoted strings to a placeholder —
 # a defensible, stated simplification of "normalize SQL... collapse literals"
