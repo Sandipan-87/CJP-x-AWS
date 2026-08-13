@@ -1,6 +1,7 @@
 import { ActionFeedPanel } from "@/components/dashboard/ActionFeedPanel";
 import { ApprovalQueuePanel } from "@/components/dashboard/ApprovalQueuePanel";
 import { MemoryInspectorPanel } from "@/components/dashboard/MemoryInspectorPanel";
+import { MetricsPanel } from "@/components/dashboard/MetricsPanel";
 import { TaskFeedPanel } from "@/components/dashboard/TaskFeedPanel";
 
 // design/02-low-level-design.md §11: the read-only SSE surface. Four panels, one per frozen
@@ -21,6 +22,7 @@ export default function DashboardPage() {
         <ActionFeedPanel />
         <MemoryInspectorPanel />
         <ApprovalQueuePanel />
+        <MetricsPanel />
       </div>
     </div>
   );

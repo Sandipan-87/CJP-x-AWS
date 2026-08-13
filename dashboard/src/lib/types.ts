@@ -53,3 +53,24 @@ export interface ApprovalRow {
 export interface ApprovalFeedRow extends ApprovalRow {
   cursor_ts: string;
 }
+
+// Mirrors workers/metrics/handler.py's GET /metrics response exactly -- LLD §12's metric table,
+// fetched via CloudWatch GetMetricData, not the memory cluster (no engram_reader involvement
+// for this panel at all).
+export interface MetricDatapoint {
+  timestamp: string; // ISO
+  value: number;
+}
+
+export interface MetricSeries {
+  dimensions: Record<string, string>;
+  datapoints: MetricDatapoint[];
+}
+
+export interface MetricsResponse {
+  window: string;
+  generated_at: string;
+  cached: boolean;
+  metrics: Record<string, MetricSeries[]>;
+  omitted: string[];
+}
