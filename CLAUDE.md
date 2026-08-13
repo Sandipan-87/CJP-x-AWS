@@ -976,107 +976,104 @@ DONE (Phase 3, chunk 14)  **A real INCIDENT-shaped message was sent to the
       recall hit / faster second pass) and an `aws ecs stop-task`
       mid-remediation kill-and-resume, neither attempted this session.
 
-DONE (Phase 3, chunk 17)  **A real sweep enumerator built, unit-tested, and
-      live-verified, 2026-08-13 -- closes the next item on this file's own
-      Next-action list: "the actual blocker on ever flipping the sweep
-      rule's `enabled=False`."** Deliberately a SMALLER, honest substitute
-      for the LLD's own answer (LLD §5.1 step 1: live traffic discovery via
-      MCP `show_running_queries`), not a shortcut around it -- this project
-      has never built an MCP client at all (a separate, larger,
-      already-tracked gap; `agent/main.py`'s own startup self-tests already
-      skip the MCP check for the same reason). Instead: a new, explicit,
-      ops-maintained registry, `watched_queries`
-      (`db/migrations/008_watched_queries.sql`) -- the same "watched query
-      list" pattern real DB reliability teams already use when they don't
-      have (or don't trust) fully automatic traffic discovery. A new
-      Lambda, `workers/sweep_enumerator/handler.py`, invoked by EventBridge
-      on the existing 5-minute schedule, reads every enabled row and sends
-      one real, `agent/main.py`-schema SQS message per row -- nothing about
-      the actual MEASUREMENT is faked; `SqlProbe.explain_analyze()` still
-      does the real work downstream, unchanged, exactly as it does for a
-      manually- or webhook-triggered message today. A sixth least-privilege
-      SQL role, `engram_sweep_enumerator` (same migration): SELECT-only on
-      `watched_queries`, deliberately read-only -- populating/editing the
-      registry is an operator action, not something the automated sweep
-      path should be able to do to itself. **FIFO `MessageGroupId` is the
-      registry row's own primary key, not a recomputed query fingerprint**
-      -- a deliberate simplification stated in the handler's own docstring:
-      a FIFO group only needs to be a stable identifier per distinct
-      candidate so SQS never processes two ticks of the SAME watched query
-      out of order, and the row's own UUID already provides that without
-      duplicating `agent/main.py`'s fingerprint algorithm in `workers/`
-      (which never imports `agent/`, same split as `pg8000` vs `psycopg3`
-      everywhere else in this directory) -- `process_message()`
-      independently recomputes its own real fingerprint from `query_text`
-      regardless of what MessageGroupId the message arrived under. **"Never
-      fail the sweep on a single source" (LLD §5.1 step 6, already stated
-      for `observe(node)`'s own collection legs) applied here too**: each
-      row is enqueued in its own try/except, so one malformed row or one
-      `SendMessage` failure is logged and skipped, never fatal to the whole
-      invocation -- covered by a dedicated unit test. `infra/build.py`
-      gained `build_sweep_enumerator_package()` (same pure-Python,
-      Docker-less `pip install --target` bundling every other Lambda here
-      uses). `infra/engram_infra/agent_stack.py`'s `_add_sweep_rule` now
-      builds this Lambda, grants it `sqs:SendMessage`/`GetQueueAttributes`/
-      `GetQueueUrl` scoped to exactly the one queue ARN and
-      `secretsmanager:GetSecretValue`/`DescribeSecret` scoped to exactly
-      one new secret ARN (`engram/sweep-dsn`), and retargets the rule from
-      a hardcoded EXAMPLE message straight to SQS onto `targets
-      .LambdaFunction(enumerator)` -- confirmed via `cdk synth
-      EngramAgentStack` (clean, zero warnings, both stacks together too)
-      that the generated IAM policy is scoped exactly as described, not
-      broader. **The rule itself stays `enabled=False`, deliberately,
-      even though the enumerator is now real and live-verified**: with an
-      EMPTY registry (the default -- nothing seeds rows anywhere),
-      enabling it is functionally harmless (one trivial Lambda invocation
-      per tick, zero downstream cost), but flipping it on AND populating
-      real rows together starts a real, ONGOING, unattended cost (real
-      Cohere/Ollama calls every time a watched query trips the anomaly
-      threshold, indefinitely) -- exactly the kind of consequential,
-      recurring-cost choice this project's own standing rule asks to
-      confirm with the user first, not decide unilaterally; stated in both
-      the stack's own module docstring and `infra/README.md`, not silently
-      decided either way. **`cdk deploy` was NOT run this session** (same
-      standing rule), but migration 008 WAS applied live and
-      `scripts/bootstrap_sweep_enumerator_role.py` WAS run live against the
-      real memory cluster (26257 reachable via VPN again this session,
-      confirmed before relying on it, per this project's own "don't assume
-      it stays open" discipline) -- 4/5 checks passed, the one failure
-      being the exact, expected, least-privilege-working-as-designed
-      `AccessDenied` on `secretsmanager:CreateSecret` under `engram-phase0`
-      (same shape as every prior Secrets Manager provisioning gap in this
-      project; the real secret write, like `webhook-dsn`/`approver-dsn`
-      before it, needs `engram-deploy`'s credentials at actual deploy
-      time). The other four -- role exists, `SELECT watched_queries`
-      succeeds, `INSERT watched_queries` correctly FAILS (read-only),
-      `SELECT tasks` (not granted) correctly FAILS -- all passed against
-      the real cluster with a real disposable row, not mocked. **A real,
-      if minor, environment finding along the way**: `scripts/run_sql.py`
-      failed with a DSN-parsing error the first time migration 008 was
-      applied, because this repo's own directory path contains spaces
-      (`...\Desktop\CJP x AWS\...`) and psycopg3's URI parser rejects an
-      unencoded space in the `sslrootcert` query parameter -- worked around
-      by copying the CA cert to a space-free path for this one invocation
-      (cleaned up afterward), not a bug in the migration or the role
-      itself. **4 new unit tests** (`tests/test_workers_sweep_enumerator.py`
-      -- empty registry, one row's message shape matches `agent/main.py`
-      exactly, distinct `MessageGroupId`s per row, one bad row doesn't
-      block the rest) using mocked `get_sweep_connection`/
-      `list_enabled_watched_queries`/`boto3.client`, no real cluster
-      needed. **Also installed `pg8000` into this dev venv** (pure Python,
-      no native extension, matching `workers/requirements.txt`'s own
-      rationale for choosing it) purely for local test collection
-      convenience -- this incidentally unblocked the 3 pre-existing
-      `workers/` test files this dev environment could never collect
-      before (`test_workers_approvals.py`/`test_workers_incident.py`/
-      `test_workers_webhooks.py`, 26 tests), a real, if secondary,
-      improvement to this session's own dev environment, stated rather
-      than left as a silent side effect. **196 Python unit tests now pass
-      in this dev environment** (up from 166 before this chunk -- 30 new
-      collectible tests: 4 for the sweep enumerator + 26 previously-
-      uncollectible `workers/` tests, now visible). `workers/README.md` and
-      `infra/README.md` updated to record the new Lambda, the new role,
-      and the not-yet-deployed/not-yet-enabled state.
+DONE (Phase 3, chunk 15)  **BOTH submission demo beats proven live, 2026-
+      08-12 -- "it remembers" (a real recall hit + exactly-once dedup) and
+      "it survives" (a real `aws ecs stop-task` mid-remediation, a real
+      ECS-driven replacement, a real resumed completion) -- plus a real,
+      previously-latent production bug found and fixed live along the way,
+      not smoothed over.** **The bug, found by the FIRST attempt at the
+      recall-hit test**: a second incident against the SAME scope (which
+      by then had a real `episode` memory item from chunk 14's outcome,
+      `embedding=NULL` by the seed-then-backfill design LLD's own comment
+      already named) was correctly classified `task_type='incident'` but
+      the task ended `status='failed'` with ZERO `decisions` rows written
+      -- meaning it crashed inside `recall(node)`, before it ever got to
+      persist anything. Confirmed directly, not guessed: `recall_ann()`
+      itself doesn't crash (CockroachDB's `<=>` against a NULL embedding
+      just returns SQL `NULL`, no error), but `agent/memory/scoring.py`'s
+      `hybrid()` does `0.45 * similarity` unconditionally -- `0.45 *
+      None` raises a plain `TypeError`, which is NOT an `EngramError`
+      subclass, so `main.py`'s own classifier correctly (if unhelpfully)
+      called it `"failed"`. **This bug had been latent in `recall_ann()`
+      since Session 14** -- nothing before this session had ever run a
+      SECOND real incident against a scope that already had a real
+      episode row, in any smoke test or prior live run; proving the
+      "it remembers" demo beat is exactly what exercised this path for
+      the first time. Fixed with `AND embedding IS NOT NULL` in
+      `recall_ann()`'s `WHERE` clause (a NULL-embedding row can't be
+      meaningfully ANN-ranked in the first place -- excluding it is the
+      correct fix, not a workaround) and added a live regression check to
+      `scripts/smoke_test_recall.py` (13/13, including the new case).
+      **This is the first real bug this project has shipped to the live
+      deployment and then had to patch and redeploy** -- a genuinely new
+      operational step, done for real: committed the fix, re-ran
+      `build-agent-image.yml` (a second real image, new digest), then hit
+      a THIRD real IAM gap trying to actually roll it out --
+      `engram-deploy` had no `ecs:UpdateService` at all. Asked the user for
+      a bundled grant covering everything both the redeploy AND the
+      upcoming kill-and-resume test would need in one round trip rather
+      than trickling through separate asks: `UpdateService`/
+      `DescribeServices` (worked scoped to the cluster/service ARNs) plus
+      `ListTasks`/`DescribeTasks`/`StopTask` -- which hit a FOURTH real,
+      genuinely informative AWS quirk: `ecs:ListTasks` checks a
+      `container-instance` ARN pattern internally regardless of which
+      filter you call it with, not the `cluster`/`service`/`task` ARNs
+      that would seem to apply -- the same class of "AWS's own resource-
+      level IAM scoping doesn't cleanly map to intuition" limitation
+      already on record in this project for CloudWatch's `GetMetricData`/
+      `ListMetrics`. Fixed the same way: `Resource: "*"` for those three
+      actions specifically, scoped ARNs kept for the two that supported
+      them. Forced the redeploy (`ecs:update_service(forceNewDeployment=
+      True)`), confirmed via `ecs:DescribeTasks` that the new task's
+      container image digest matched the freshly-pushed one exactly (not
+      assumed from a timestamp) -- the FIRST time this session could
+      verify ECS/task state directly instead of asking the user to check
+      the console. **"It remembers," verified for real after the
+      redeploy**: sent a fresh incident against the same fingerprint;
+      the `decisions(node='recall')` row shows 5 real citations (all
+      `class='query_fingerprint'`, similarity ~0.62) to memory items
+      written by EARLIER incidents against this exact query shape --
+      genuine recall, not fabricated. Even more informative than a plain
+      approval-and-apply would have been: `gate()`'s idempotency-key dedup
+      recognized this EXACT remediation (same table+column) was already
+      applied successfully in chunk 14, so it reconciled onto that
+      existing `remediation_actions` row instead of creating a duplicate
+      or re-running the DDL -- invariant #4's exactly-once guarantee,
+      caught working correctly across incidents, not just within one.
+      **"It survives," proven for real**: a genuinely fresh incident (new
+      scenario table, new fingerprint) was sent; once its real pending
+      approval appeared (NOT yet approved), the currently-running ECS
+      task was stopped for real (`ecs:StopTask`) -- ECS started a
+      replacement task automatically within ~35 seconds (confirmed: a
+      DIFFERENT task ARN, `RUNNING`). The approval was then granted (the
+      original task never got to see this decision), and the NEW task
+      picked up the redelivered SQS message and completed the interrupted
+      work: `outcome='success'`, exactly ONE `remediation_actions` row for
+      the whole episode (confirmed by direct count), a real index
+      confirmed via `SHOW INDEXES` on the target cluster, zero leftover
+      `agent_leases` rows. **A precise, honest mechanism finding, not
+      overclaimed**: `observations` shows 2 rows and `decisions` shows
+      `recall→reason→gate` ran once (before the kill) and
+      `recall→reason→act` ran AGAIN after redelivery (no second `gate`
+      decision, since its idempotency check found the by-then-approved
+      row and skipped straight to `act`) -- meaning recovery here is
+      achieved by DB-LEVEL IDEMPOTENCY across a full graph re-run
+      (`process_message()` always builds a fresh initial state rather
+      than passing `None` to resume from checkpoint), NOT a true LangGraph
+      checkpoint-resume that would have skipped the already-completed
+      `observe`/`recall`/`reason` nodes. The checkpointer IS persisting
+      real state throughout (12 real rows in `checkpoints` for this
+      thread, confirmed) -- it just isn't being used as an execution-skip
+      optimization yet, a real, measurable cost (a second real Ollama
+      call for the same incident) worth closing in a future session, not
+      a correctness gap: the exactly-once guarantee held regardless,
+      because it's enforced at the DB layer (`tasks_active_incident_idx`,
+      `remediation_actions.idempotency_key`), independent of whatever
+      LangGraph itself does or doesn't skip. Cleaned up both disposable
+      target-cluster scratch tables afterward; left every resulting
+      `tasks`/`observations`/`decisions`/`remediation_actions`/
+      `approvals`/`checkpoints` row in the memory cluster, same reasoning
+      as chunks 13/14.
 
 DONE (Phase 3, chunk 16)  **Checkpoint-resume now actually skips re-completed
       nodes on redelivery, 2026-08-13 -- closes the #1 item on this file's
@@ -1183,104 +1180,181 @@ DONE (Phase 3, chunk 16)  **Checkpoint-resume now actually skips re-completed
       lookup) that Session 41 explicitly flagged as inefficient but not
       incorrect.
 
-DONE (Phase 3, chunk 15)  **BOTH submission demo beats proven live, 2026-
-      08-12 -- "it remembers" (a real recall hit + exactly-once dedup) and
-      "it survives" (a real `aws ecs stop-task` mid-remediation, a real
-      ECS-driven replacement, a real resumed completion) -- plus a real,
-      previously-latent production bug found and fixed live along the way,
-      not smoothed over.** **The bug, found by the FIRST attempt at the
-      recall-hit test**: a second incident against the SAME scope (which
-      by then had a real `episode` memory item from chunk 14's outcome,
-      `embedding=NULL` by the seed-then-backfill design LLD's own comment
-      already named) was correctly classified `task_type='incident'` but
-      the task ended `status='failed'` with ZERO `decisions` rows written
-      -- meaning it crashed inside `recall(node)`, before it ever got to
-      persist anything. Confirmed directly, not guessed: `recall_ann()`
-      itself doesn't crash (CockroachDB's `<=>` against a NULL embedding
-      just returns SQL `NULL`, no error), but `agent/memory/scoring.py`'s
-      `hybrid()` does `0.45 * similarity` unconditionally -- `0.45 *
-      None` raises a plain `TypeError`, which is NOT an `EngramError`
-      subclass, so `main.py`'s own classifier correctly (if unhelpfully)
-      called it `"failed"`. **This bug had been latent in `recall_ann()`
-      since Session 14** -- nothing before this session had ever run a
-      SECOND real incident against a scope that already had a real
-      episode row, in any smoke test or prior live run; proving the
-      "it remembers" demo beat is exactly what exercised this path for
-      the first time. Fixed with `AND embedding IS NOT NULL` in
-      `recall_ann()`'s `WHERE` clause (a NULL-embedding row can't be
-      meaningfully ANN-ranked in the first place -- excluding it is the
-      correct fix, not a workaround) and added a live regression check to
-      `scripts/smoke_test_recall.py` (13/13, including the new case).
-      **This is the first real bug this project has shipped to the live
-      deployment and then had to patch and redeploy** -- a genuinely new
-      operational step, done for real: committed the fix, re-ran
-      `build-agent-image.yml` (a second real image, new digest), then hit
-      a THIRD real IAM gap trying to actually roll it out --
-      `engram-deploy` had no `ecs:UpdateService` at all. Asked the user for
-      a bundled grant covering everything both the redeploy AND the
-      upcoming kill-and-resume test would need in one round trip rather
-      than trickling through separate asks: `UpdateService`/
-      `DescribeServices` (worked scoped to the cluster/service ARNs) plus
-      `ListTasks`/`DescribeTasks`/`StopTask` -- which hit a FOURTH real,
-      genuinely informative AWS quirk: `ecs:ListTasks` checks a
-      `container-instance` ARN pattern internally regardless of which
-      filter you call it with, not the `cluster`/`service`/`task` ARNs
-      that would seem to apply -- the same class of "AWS's own resource-
-      level IAM scoping doesn't cleanly map to intuition" limitation
-      already on record in this project for CloudWatch's `GetMetricData`/
-      `ListMetrics`. Fixed the same way: `Resource: "*"` for those three
-      actions specifically, scoped ARNs kept for the two that supported
-      them. Forced the redeploy (`ecs:update_service(forceNewDeployment=
-      True)`), confirmed via `ecs:DescribeTasks` that the new task's
-      container image digest matched the freshly-pushed one exactly (not
-      assumed from a timestamp) -- the FIRST time this session could
-      verify ECS/task state directly instead of asking the user to check
-      the console. **"It remembers," verified for real after the
-      redeploy**: sent a fresh incident against the same fingerprint;
-      the `decisions(node='recall')` row shows 5 real citations (all
-      `class='query_fingerprint'`, similarity ~0.62) to memory items
-      written by EARLIER incidents against this exact query shape --
-      genuine recall, not fabricated. Even more informative than a plain
-      approval-and-apply would have been: `gate()`'s idempotency-key dedup
-      recognized this EXACT remediation (same table+column) was already
-      applied successfully in chunk 14, so it reconciled onto that
-      existing `remediation_actions` row instead of creating a duplicate
-      or re-running the DDL -- invariant #4's exactly-once guarantee,
-      caught working correctly across incidents, not just within one.
-      **"It survives," proven for real**: a genuinely fresh incident (new
-      scenario table, new fingerprint) was sent; once its real pending
-      approval appeared (NOT yet approved), the currently-running ECS
-      task was stopped for real (`ecs:StopTask`) -- ECS started a
-      replacement task automatically within ~35 seconds (confirmed: a
-      DIFFERENT task ARN, `RUNNING`). The approval was then granted (the
-      original task never got to see this decision), and the NEW task
-      picked up the redelivered SQS message and completed the interrupted
-      work: `outcome='success'`, exactly ONE `remediation_actions` row for
-      the whole episode (confirmed by direct count), a real index
-      confirmed via `SHOW INDEXES` on the target cluster, zero leftover
-      `agent_leases` rows. **A precise, honest mechanism finding, not
-      overclaimed**: `observations` shows 2 rows and `decisions` shows
-      `recall→reason→gate` ran once (before the kill) and
-      `recall→reason→act` ran AGAIN after redelivery (no second `gate`
-      decision, since its idempotency check found the by-then-approved
-      row and skipped straight to `act`) -- meaning recovery here is
-      achieved by DB-LEVEL IDEMPOTENCY across a full graph re-run
-      (`process_message()` always builds a fresh initial state rather
-      than passing `None` to resume from checkpoint), NOT a true LangGraph
-      checkpoint-resume that would have skipped the already-completed
-      `observe`/`recall`/`reason` nodes. The checkpointer IS persisting
-      real state throughout (12 real rows in `checkpoints` for this
-      thread, confirmed) -- it just isn't being used as an execution-skip
-      optimization yet, a real, measurable cost (a second real Ollama
-      call for the same incident) worth closing in a future session, not
-      a correctness gap: the exactly-once guarantee held regardless,
-      because it's enforced at the DB layer (`tasks_active_incident_idx`,
-      `remediation_actions.idempotency_key`), independent of whatever
-      LangGraph itself does or doesn't skip. Cleaned up both disposable
-      target-cluster scratch tables afterward; left every resulting
-      `tasks`/`observations`/`decisions`/`remediation_actions`/
-      `approvals`/`checkpoints` row in the memory cluster, same reasoning
-      as chunks 13/14.
+DONE (Phase 3, chunk 17)  **A real sweep enumerator built, unit-tested, and
+      live-verified, 2026-08-13 -- closes the next item on this file's own
+      Next-action list: "the actual blocker on ever flipping the sweep
+      rule's `enabled=False`."** Deliberately a SMALLER, honest substitute
+      for the LLD's own answer (LLD §5.1 step 1: live traffic discovery via
+      MCP `show_running_queries`), not a shortcut around it -- this project
+      has never built an MCP client at all (a separate, larger,
+      already-tracked gap; `agent/main.py`'s own startup self-tests already
+      skip the MCP check for the same reason). Instead: a new, explicit,
+      ops-maintained registry, `watched_queries`
+      (`db/migrations/008_watched_queries.sql`) -- the same "watched query
+      list" pattern real DB reliability teams already use when they don't
+      have (or don't trust) fully automatic traffic discovery. A new
+      Lambda, `workers/sweep_enumerator/handler.py`, invoked by EventBridge
+      on the existing 5-minute schedule, reads every enabled row and sends
+      one real, `agent/main.py`-schema SQS message per row -- nothing about
+      the actual MEASUREMENT is faked; `SqlProbe.explain_analyze()` still
+      does the real work downstream, unchanged, exactly as it does for a
+      manually- or webhook-triggered message today. A sixth least-privilege
+      SQL role, `engram_sweep_enumerator` (same migration): SELECT-only on
+      `watched_queries`, deliberately read-only -- populating/editing the
+      registry is an operator action, not something the automated sweep
+      path should be able to do to itself. **FIFO `MessageGroupId` is the
+      registry row's own primary key, not a recomputed query fingerprint**
+      -- a deliberate simplification stated in the handler's own docstring:
+      a FIFO group only needs to be a stable identifier per distinct
+      candidate so SQS never processes two ticks of the SAME watched query
+      out of order, and the row's own UUID already provides that without
+      duplicating `agent/main.py`'s fingerprint algorithm in `workers/`
+      (which never imports `agent/`, same split as `pg8000` vs `psycopg3`
+      everywhere else in this directory) -- `process_message()`
+      independently recomputes its own real fingerprint from `query_text`
+      regardless of what MessageGroupId the message arrived under. **"Never
+      fail the sweep on a single source" (LLD §5.1 step 6, already stated
+      for `observe(node)`'s own collection legs) applied here too**: each
+      row is enqueued in its own try/except, so one malformed row or one
+      `SendMessage` failure is logged and skipped, never fatal to the whole
+      invocation -- covered by a dedicated unit test. `infra/build.py`
+      gained `build_sweep_enumerator_package()` (same pure-Python,
+      Docker-less `pip install --target` bundling every other Lambda here
+      uses). `infra/engram_infra/agent_stack.py`'s `_add_sweep_rule` now
+      builds this Lambda, grants it `sqs:SendMessage`/`GetQueueAttributes`/
+      `GetQueueUrl` scoped to exactly the one queue ARN and
+      `secretsmanager:GetSecretValue`/`DescribeSecret` scoped to exactly
+      one new secret ARN (`engram/sweep-dsn`), and retargets the rule from
+      a hardcoded EXAMPLE message straight to SQS onto `targets
+      .LambdaFunction(enumerator)` -- confirmed via `cdk synth
+      EngramAgentStack` (clean, zero warnings, both stacks together too)
+      that the generated IAM policy is scoped exactly as described, not
+      broader. **The rule itself stays `enabled=False`, deliberately,
+      even though the enumerator is now real and live-verified**: with an
+      EMPTY registry (the default -- nothing seeds rows anywhere),
+      enabling it is functionally harmless (one trivial Lambda invocation
+      per tick, zero downstream cost), but flipping it on AND populating
+      real rows together starts a real, ONGOING, unattended cost (real
+      Cohere/Ollama calls every time a watched query trips the anomaly
+      threshold, indefinitely) -- exactly the kind of consequential,
+      recurring-cost choice this project's own standing rule asks to
+      confirm with the user first, not decide unilaterally; stated in both
+      the stack's own module docstring and `infra/README.md`, not silently
+      decided either way. **`cdk deploy` was NOT run this session** (same
+      standing rule), but migration 008 WAS applied live and
+      `scripts/bootstrap_sweep_enumerator_role.py` WAS run live against the
+      real memory cluster (26257 reachable via VPN again this session,
+      confirmed before relying on it, per this project's own "don't assume
+      it stays open" discipline) -- 4/5 checks passed, the one failure
+      being the exact, expected, least-privilege-working-as-designed
+      `AccessDenied` on `secretsmanager:CreateSecret` under `engram-phase0`
+      (same shape as every prior Secrets Manager provisioning gap in this
+      project; the real secret write, like `webhook-dsn`/`approver-dsn`
+      before it, needs `engram-deploy`'s credentials at actual deploy
+      time). The other four -- role exists, `SELECT watched_queries`
+      succeeds, `INSERT watched_queries` correctly FAILS (read-only),
+      `SELECT tasks` (not granted) correctly FAILS -- all passed against
+      the real cluster with a real disposable row, not mocked. **A real,
+      if minor, environment finding along the way**: `scripts/run_sql.py`
+      failed with a DSN-parsing error the first time migration 008 was
+      applied, because this repo's own directory path contains spaces
+      (`...\Desktop\CJP x AWS\...`) and psycopg3's URI parser rejects an
+      unencoded space in the `sslrootcert` query parameter -- worked around
+      by copying the CA cert to a space-free path for this one invocation
+      (cleaned up afterward), not a bug in the migration or the role
+      itself. **4 new unit tests** (`tests/test_workers_sweep_enumerator.py`
+      -- empty registry, one row's message shape matches `agent/main.py`
+      exactly, distinct `MessageGroupId`s per row, one bad row doesn't
+      block the rest) using mocked `get_sweep_connection`/
+      `list_enabled_watched_queries`/`boto3.client`, no real cluster
+      needed. **Also installed `pg8000` into this dev venv** (pure Python,
+      no native extension, matching `workers/requirements.txt`'s own
+      rationale for choosing it) purely for local test collection
+      convenience -- this incidentally unblocked the 3 pre-existing
+      `workers/` test files this dev environment could never collect
+      before (`test_workers_approvals.py`/`test_workers_incident.py`/
+      `test_workers_webhooks.py`, 26 tests), a real, if secondary,
+      improvement to this session's own dev environment, stated rather
+      than left as a silent side effect. **196 Python unit tests now pass
+      in this dev environment** (up from 166 before this chunk -- 30 new
+      collectible tests: 4 for the sweep enumerator + 26 previously-
+      uncollectible `workers/` tests, now visible). `workers/README.md` and
+      `infra/README.md` updated to record the new Lambda, the new role,
+      and the not-yet-deployed/not-yet-enabled state.
+
+DONE (Phase 3, chunk 18)  **A live dashboard metrics panel built, plus a real
+      production bug it caught immediately, 2026-08-13 -- closes the "dashboard
+      metrics panel consuming GET /metrics" Next-action item.** Zero
+      CockroachDB RU cost by design (deliberately picked next, RU-budget-
+      first, per this session's own new triage discipline): the panel only
+      ever talks to the already-deployed `GET /metrics` Lambda (CloudWatch
+      `GetMetricData`), via a new `dashboard/src/app/api/metrics/route.ts`
+      backend-for-frontend proxy holding the API Gateway key server-side
+      only (same pattern as the existing approvals proxy route — reuses
+      `ENGRAM_APPROVALS_API_URL`/`_API_KEY` rather than adding a second
+      pair, since both are really "the one API Gateway's base URL/key,"
+      not approvals-specific despite the name). New `MetricsPanel`
+      component: two headline line charts (recall hit rate, LLM token
+      usage) plus stat tiles for the rest of LLD §12's metric table, a
+      window selector (1h/6h/24h/7d), 30s polling matching the Lambda's own
+      cache TTL. **Followed the dataviz skill start to finish, not just
+      copied an existing chart**: replaced the dashboard's placeholder
+      grayscale `--chart-1..5` CSS tokens with the skill's validated
+      5-slot categorical palette (light + dark steps, fixed assignment
+      order, re-validated via the skill's own `validate_palette.js` before
+      committing); built a hand-rolled SVG `LineChart` component (no
+      charting library is a dependency anywhere in this repo) with the
+      skill's mark specs — 2px lines, ≥8px end markers with a
+      surface-color ring, hairline gridlines, a hover crosshair+tooltip
+      that lists every series at the hovered X (not just the one under
+      the cursor), and a legend only when ≥2 series exist. **A real,
+      previously-invisible production bug, found live by this panel on
+      its first real run against the deployed agent's actual CloudWatch
+      data, not staged**: `llm_token_usage`'s real values in CloudWatch
+      were in the **billions** — plainly impossible for a per-call token
+      count. Traced to `agent/providers/ollama_cloud_llm.py`: Ollama's raw
+      `/api/chat` response includes `total_duration` (call latency in
+      **nanoseconds**, ~8-9 billion for a real multi-second call) alongside
+      the real `eval_count`/`prompt_eval_count` token fields, and
+      `reason(node)`'s `token_usage = sum(v for v in result.usage.values()
+      if isinstance(v, (int, float)))` (LLD-sanctioned as "sums whatever
+      numeric fields `LLMResult.usage` actually carries") silently summed
+      all three together — turning "token usage" into "call duration in
+      nanoseconds" without ever raising an error. Latency was already
+      being correctly, separately measured via `llm_latency_ms`
+      (`time.perf_counter()`, inside `reason(node)` itself) — `total_duration`
+      here was only ever a redundant, wrongly-unit'd duplicate. Fixed by
+      excluding it from the `usage` dict the provider constructs; a new
+      regression test (`tests/test_ollama_cloud_llm.py`, 11 tests total, up
+      from 10) asserts `usage` never carries `total_duration`, only the two
+      real token-count fields. **A second, smaller bug in the CHART itself,
+      caught by the same live run** (dataviz skill's own step 7: "render it
+      and look at it," not just eyeball the code): a fixed 44px left
+      margin clipped the y-axis labels' leading digits off the left edge of
+      the SVG viewBox once real values got this large — fixed by sizing the
+      margin dynamically from the actual widest formatted tick label
+      instead of a fixed constant, moved earlier in render order (before
+      the empty-state early return, keeping every `useMemo` call
+      unconditional per React's hooks rules). **Live-verified in a real
+      browser via claude-in-chrome**, not just `next build`: real data from
+      earlier live sessions rendered correctly across window sizes, the
+      two-series legend/color-consistency worked (`incident-test-bigger`/
+      `kill-test-a5fb74a5`, stable colors across polls since series are
+      sorted by dimension identity before color assignment, never by
+      response order), the hover crosshair+tooltip worked (verified with a
+      real mouse hover, not assumed from the code alone), and the empty
+      state rendered correctly for windows with genuinely no data (1h/6h,
+      since the real historical data is all from 2026-08-12). **Stated
+      plainly, not hidden: the CloudWatch data this panel displays for
+      `llm_token_usage` in older windows is still the pre-fix, billions-
+      scale data** — the code fix only affects FUTURE Ollama calls; nothing
+      retroactively repairs already-recorded CloudWatch datapoints. **The
+      deployed ECS agent still runs the pre-fix image** — the code fix
+      exists in the repo and passes tests, but hasn't been rebuilt/
+      redeployed this session (a real, live AWS action, asked about
+      separately rather than bundled unilaterally into this chunk, per this
+      project's own standing rule). 197 Python unit tests pass in total (up
+      from 196).
 
 OPEN (Phase 3, non-gating)  **Update, chunk 17**: a real sweep enumerator now
       exists (`workers/sweep_enumerator/handler.py` + `watched_queries`
@@ -1400,7 +1474,7 @@ BLOCKING  **RU budget, discovered 2026-08-13 -- treat as real and tight for the
 
 **RU-frugality is now a standing constraint on every item below** (see §6's new BLOCKING entry, 2026-08-13): `engram-sandbox-target` is capped at 35,000,000 RU with ~24-26M already consumed, so prefer chunks needing no/minimal live CockroachDB interaction, and if a live check IS needed, use small (thousand-row, not million-row) scratch data.
 
-**Next action, in order (Phase 3 continues):** (1) DONE 2026-08-13, same session: `cloudwatch:GetMetricData`/`ListMetrics` granted and verified live (14 real metrics confirmed landing in the `engram` namespace, zero CockroachDB RU spent) -- see §6's updated entry; (2) user has explicitly decided to keep the sweep rule `enabled=False` for now (2026-08-13 RU-triage conversation) -- whether to `cdk deploy EngramAgentStack` at all (to get the new sweep-enumerator Lambda live, rule still off) remains a separate, still-open, not-yet-asked decision; (3) a dashboard metrics panel consuming the now-live `GET /metrics` -- pure frontend + Lambda-via-CloudWatch, no CockroachDB RU; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern -- touches real (currently small-volume) DB rows, keep any live verification data small; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists -- a live test would re-run the graph, budget accordingly; (6) low-priority: `scripts/smoke_test_main.py`'s own `_approve_when_ready` scopes its poll by `target_cluster_id` only (chunk 16 found and fixed the same latent bug in a new script) -- the shared sandbox target cluster now has enough accumulated historical `remediation_actions` rows that a future run of that specific script could pick up a stale action and spuriously time out; scope it by `task_id` like chunk 16's script does, next time that file is touched.
+**Next action, in order (Phase 3 continues):** (1) DONE 2026-08-13: `cloudwatch:GetMetricData`/`ListMetrics` granted and verified live; DONE 2026-08-13: dashboard metrics panel built and live-verified in a real browser (chunk 18) -- both closed this session, see §6; (2) decide whether to rebuild+redeploy the ECS agent image to pick up chunk 18's `llm_token_usage` fix (`agent/providers/ollama_cloud_llm.py`) -- low-cost (GitHub Actions build is free, ECS redeploy's own startup self-tests are tiny real calls, not a meaningful RU/API cost) but a real live-AWS action, asked about separately rather than bundled into the chunk that found the bug; (3) user has explicitly decided to keep the sweep rule `enabled=False` for now (2026-08-13 RU-triage conversation) -- whether to `cdk deploy EngramAgentStack` at all (to get the new sweep-enumerator Lambda live, rule still off) remains a separate, still-open, not-yet-asked decision, possibly worth bundling with (2) into one redeploy; (4) lifecycle-worker Lambdas (`consolidator`/`decayer`/`embedding_backfill`, LLD §9), reusing the same CDK pattern -- touches real (currently small-volume) DB rows, keep any live verification data small; (5) the `gate→reason` re-plan edge, once a loop-prevention design exists -- a live test would re-run the graph, budget accordingly; (6) low-priority: `scripts/smoke_test_main.py`'s own `_approve_when_ready` scopes its poll by `target_cluster_id` only (chunk 16 found and fixed the same latent bug in a new script) -- the shared sandbox target cluster now has enough accumulated historical `remediation_actions` rows that a future run of that specific script could pick up a stale action and spuriously time out; scope it by `task_id` like chunk 16's script does, next time that file is touched.
 
 ---
 
