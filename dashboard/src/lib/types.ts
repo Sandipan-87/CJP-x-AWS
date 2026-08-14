@@ -36,6 +36,18 @@ export interface InspectorRow {
   procedure_status: string | null;
 }
 
+// db/migrations/010_reader_recall_citations_grant.sql's `v_recall_citations` view — one row
+// per memory item, the MOST RECENT recall citation's similarity score for that item (a narrow
+// unnest of decisions.citations, not the raw decisions table). Closes the "it remembers" demo
+// beat's similarity-on-screen gap the inspector feed's own route comment used to name.
+export interface RecallCitationRow {
+  item_id: string;
+  similarity: number;
+  source: string;
+  scope_id: string;
+  created_at: string;
+}
+
 export interface ApprovalRow {
   approval_id: string;
   task_id: string;

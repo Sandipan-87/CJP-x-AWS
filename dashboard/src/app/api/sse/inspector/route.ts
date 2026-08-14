@@ -2,12 +2,10 @@ import { fetchInspectorRows } from "@/lib/feeds";
 import { createSsePollStream, sseHeaders } from "@/lib/sse";
 
 // design/02-low-level-design.md §11.1: `inspector` feed, `v_memory_inspector`, cursor `created_at`.
-// NOTE (stated, not hidden): the frozen event schema here is `{…, confidence, provenance}` --
-// it does NOT include per-recall `similarity`/citations (those live in `decisions.citations`,
-// which engram_reader has no grant on). §11.3's demo narrative ("Memory Inspector shows...
-// similarity, confidence, citations") is broader than what this frozen feed alone delivers;
-// closing that gap needs either a grant extension or a second view, deliberately not done in
-// this chunk -- scoped out, not silently dropped.
+// The frozen event schema here stays `{…, confidence, provenance}` -- similarity now reaches the
+// dashboard via a SEPARATE feed (`/api/sse/citations`, db/migrations/010_reader_recall_citations_
+// grant.sql's `v_recall_citations`), joined onto these rows client-side in MemoryInspectorPanel
+// by item_id, rather than widening this frozen view/route.
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 

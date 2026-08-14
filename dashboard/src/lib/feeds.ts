@@ -1,6 +1,6 @@
 import type { QueryResultRow } from "pg";
 import { getReaderPool } from "@/lib/db";
-import type { ActionRow, ApprovalFeedRow, InspectorRow, TaskRow } from "@/lib/types";
+import type { ActionRow, ApprovalFeedRow, InspectorRow, RecallCitationRow, TaskRow } from "@/lib/types";
 
 // Shared shape for tasks/actions/inspector: all three are "SELECT ... FROM <frozen view>
 // ORDER BY created_at" (LLD §11.1). `approvals` is deliberately NOT built on this helper --
@@ -37,6 +37,13 @@ export const fetchActionRows = createdAtFeed<ActionRow>(
 export const fetchInspectorRows = createdAtFeed<InspectorRow>(
   `SELECT item_id, class, content, provenance, created_at, confidence, procedure_status
    FROM v_memory_inspector`
+);
+
+// db/migrations/010_reader_recall_citations_grant.sql -- a second, separate feed (not folded
+// into fetchInspectorRows above) because it's keyed by item_id, not a fresh row per event; the
+// panel joins these onto its own inspector rows client-side by item_id.
+export const fetchRecallCitationRows = createdAtFeed<RecallCitationRow>(
+  `SELECT item_id, similarity, source, scope_id, created_at FROM v_recall_citations`
 );
 
 // approvals: LLD §11.1 names this feed as reading the `approvals` TABLE directly ("poll status
