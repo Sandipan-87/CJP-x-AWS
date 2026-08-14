@@ -140,7 +140,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             lo, hi = inserted + 1, inserted + batch
             t0 = time.perf_counter()
             cur.execute(
-                f"INSERT INTO {table} SELECT g, g % 500 FROM generate_series(%s, %s) g", (lo, hi)
+                f"INSERT INTO {table} SELECT g, g %% 500 FROM generate_series(%s, %s) g", (lo, hi)
             )
             inserted += batch
             print(f"  inserted rows {lo:,}-{hi:,} ({inserted:,}/{rows:,}) in {time.perf_counter() - t0:.1f}s")
