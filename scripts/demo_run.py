@@ -48,6 +48,7 @@ otherwise) — confirm that BEFORE running `build`.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import pathlib
 import shutil
@@ -155,8 +156,6 @@ def cmd_build(args: argparse.Namespace) -> int:
         "  this is a shape/plan sanity check only (full scan + a real index candidate), not a\n"
         "  timing guarantee."
     )
-
-    import asyncio
 
     async def _check() -> None:
         async with SqlProbe(dsn=dsn) as probe:
@@ -377,4 +376,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        # psycopg's async mode can't run under Windows' default ProactorEventLoop --
+        # same fix every other live script in this repo already applies (e.g.
+        # scripts/smoke_test_main.py). Only `build`'s local EXPLAIN ANALYZE sanity
+        # check uses async psycopg; caught live on this script's first real run.
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     sys.exit(main())
