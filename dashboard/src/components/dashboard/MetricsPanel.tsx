@@ -128,18 +128,18 @@ export function MetricsPanel() {
   return (
     <Card className="md:col-span-2 xl:col-span-4">
       <CardHeader>
-        <CardTitle className="flex flex-wrap items-center justify-between gap-2">
+        <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-xs tracking-widest text-muted-foreground uppercase">
           <span>Metrics</span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {/* Filters: one row, above the charts, date-range presets (references/interaction.md) */}
-            <div className="flex gap-1 rounded-md border p-0.5">
+            <div className="flex gap-1 rounded-md border border-border p-0.5">
               {WINDOWS.map((w) => (
                 <button
                   key={w}
                   onClick={() => setWindow(w)}
-                  className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                  className={`rounded px-2.5 py-1 font-mono text-xs font-medium normal-case transition-colors ${
                     w === window
-                      ? "bg-primary text-primary-foreground"
+                      ? "bg-foreground text-background"
                       : "text-muted-foreground hover:bg-accent"
                   }`}
                 >
@@ -148,23 +148,23 @@ export function MetricsPanel() {
               ))}
             </div>
             {data && (
-              <span className="text-xs text-muted-foreground">
+              <span className="font-mono normal-case">
                 {data.cached ? "cached" : "live"} · {new Date(data.generated_at).toLocaleTimeString()}
               </span>
             )}
           </div>
         </CardTitle>
       </CardHeader>
-      <CardContent className="flex flex-col gap-6">
+      <CardContent className="flex flex-col gap-5">
         {error && (
-          <p className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive">
+          <p className="rounded-md border border-red-900 bg-red-950 p-3 text-sm text-red-400">
             {error}
           </p>
         )}
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
           <div>
-            <h3 className="mb-2 text-sm font-medium">Recall hit rate</h3>
+            <h3 className="mb-2 text-xs tracking-wide text-muted-foreground uppercase">Recall hit rate</h3>
             <LineChart
               series={toChartSeries(metrics?.["recall_hit_rate"])}
               yDomain={[0, 1]}
@@ -173,7 +173,7 @@ export function MetricsPanel() {
             />
           </div>
           <div>
-            <h3 className="mb-2 text-sm font-medium">LLM token usage</h3>
+            <h3 className="mb-2 text-xs tracking-wide text-muted-foreground uppercase">LLM token usage</h3>
             <LineChart
               series={toChartSeries(metrics?.["llm_token_usage"])}
               emptyLabel="No LLM calls yet in this window."

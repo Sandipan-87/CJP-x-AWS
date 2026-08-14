@@ -9,6 +9,10 @@ import type { MetricSeries } from "@/lib/types";
 // references/interaction.md): 2px lines, >=8px end markers with a surface-color ring, hairline
 // gridlines, a crosshair+tooltip that lists every series at the hovered X, and a legend whenever
 // there's more than one series (never make the reader color-match alone).
+//
+// Deliberately flat: no area-fill gradient, no glow filter, no shadow anywhere in this file --
+// a flat, dense, minimalist dev-tool look means the 2px line and the end marker ARE the whole
+// mark, nothing softened or backlit behind them. Numeric/timestamp text uses --font-mono.
 
 export interface ChartSeries {
   key: string;
@@ -164,6 +168,7 @@ export function LineChart({ series, height = 200, yDomain, yFormat = defaultYFor
                   textAnchor="end"
                   dominantBaseline="middle"
                   fontSize={10}
+                  fontFamily="var(--font-mono)"
                   fill="var(--muted-foreground)"
                 >
                   {yFormat(v)}
@@ -181,13 +186,21 @@ export function LineChart({ series, height = 200, yDomain, yFormat = defaultYFor
             strokeWidth={1}
           />
           {/* X-axis labels: start / end */}
-          <text x={margin.left} y={height - 6} fontSize={10} fill="var(--muted-foreground)" textAnchor="start">
+          <text
+            x={margin.left}
+            y={height - 6}
+            fontSize={10}
+            fontFamily="var(--font-mono)"
+            fill="var(--muted-foreground)"
+            textAnchor="start"
+          >
             {new Date(xDomain[0]).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </text>
           <text
             x={margin.left + plotW}
             y={height - 6}
             fontSize={10}
+            fontFamily="var(--font-mono)"
             fill="var(--muted-foreground)"
             textAnchor="end"
           >
@@ -201,15 +214,15 @@ export function LineChart({ series, height = 200, yDomain, yFormat = defaultYFor
               (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
             );
             const d = sorted
-              .map((dp, i) => {
+              .map((dp, idx) => {
                 const x = xScale(new Date(dp.timestamp).getTime());
                 const y = yScale(dp.value);
-                return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+                return `${idx === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
               })
               .join(" ");
-            const last = sorted[sorted.length - 1];
-            const lastX = xScale(new Date(last.timestamp).getTime());
-            const lastY = yScale(last.value);
+            const lastPoint = sorted[sorted.length - 1];
+            const lastX = xScale(new Date(lastPoint.timestamp).getTime());
+            const lastY = yScale(lastPoint.value);
             return (
               <g key={s.key}>
                 <path d={d} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
@@ -219,7 +232,7 @@ export function LineChart({ series, height = 200, yDomain, yFormat = defaultYFor
             );
           })}
 
-          {/* Hover crosshair */}
+          {/* Hover crosshair -- flat, same hairline color as the baseline/gridlines */}
           {nearestTimestamp !== null && (
             <line
               x1={xScale(nearestTimestamp)}
@@ -232,10 +245,11 @@ export function LineChart({ series, height = 200, yDomain, yFormat = defaultYFor
           )}
         </svg>
 
-        {/* Tooltip -- rendered as HTML (not SVG text) so it can sit above the chart and wrap */}
+        {/* Tooltip -- rendered as HTML (not SVG text) so it can sit above the chart and wrap.
+            Flat: a hairline border, no shadow. */}
         {nearestTimestamp !== null && (
           <div
-            className="pointer-events-none absolute top-2 z-10 flex flex-col gap-1 rounded-md border bg-popover px-2 py-1.5 text-xs shadow-md"
+            className="pointer-events-none absolute top-2 z-10 flex flex-col gap-1 rounded-md border border-border bg-popover px-2.5 py-2 font-mono text-xs"
             style={{
               left: `${(xScale(nearestTimestamp) / CHART_WIDTH) * 100}%`,
               transform:
@@ -252,7 +266,7 @@ export function LineChart({ series, height = 200, yDomain, yFormat = defaultYFor
                 <div key={s.key} className="flex items-center gap-1.5">
                   <span className="inline-block h-0.5 w-3 rounded-full" style={{ backgroundColor: s.color }} />
                   <span className="font-semibold text-popover-foreground">{yFormat(dp.value)}</span>
-                  <span className="text-muted-foreground">{s.label}</span>
+                  <span className="font-sans text-muted-foreground">{s.label}</span>
                 </div>
               );
             })}

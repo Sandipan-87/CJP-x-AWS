@@ -11,9 +11,9 @@ interface StatTileProps {
 
 export function StatTile({ label, value, hint }: StatTileProps) {
   return (
-    <div className="flex flex-col gap-1 rounded-lg border p-3">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-2xl font-semibold">{value}</span>
+    <div className="flex flex-col gap-1 rounded-lg border border-border p-3">
+      <span className="text-xs tracking-wider text-muted-foreground uppercase">{label}</span>
+      <span className="font-mono text-3xl font-semibold">{value}</span>
       {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
     </div>
   );

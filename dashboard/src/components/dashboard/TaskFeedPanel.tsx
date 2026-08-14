@@ -25,16 +25,16 @@ const STATUS_VARIANT: Record<string, "secondary" | "destructive" | "outline" | "
 const getTaskKey = (e: TaskEvent) => e.task.task_id;
 
 export function TaskFeedPanel() {
-  const { events, connected } = useSse<TaskEvent>("/api/sse/tasks", getTaskKey);
+  const { events, connected, recentKeys } = useSse<TaskEvent>("/api/sse/tasks", getTaskKey);
   const tasks = [...events].reverse();
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center justify-between">
+        <CardTitle className="flex items-center justify-between text-xs tracking-widest text-muted-foreground uppercase">
           <span>Recent Tasks</span>
           <span
-            className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-emerald-500" : "bg-muted-foreground/30"}`}
             title={connected ? "SSE connected" : "reconnecting…"}
           />
         </CardTitle>
@@ -46,7 +46,12 @@ export function TaskFeedPanel() {
           ) : (
             <ul className="flex flex-col gap-2">
               {tasks.map(({ task }) => (
-                <li key={task.task_id} className="flex flex-col gap-1 rounded-lg border p-2 text-sm">
+                <li
+                  key={task.task_id}
+                  className={`flex flex-col gap-1.5 rounded-lg border border-border p-2.5 text-sm transition-colors ${
+                    recentKeys.has(task.task_id) ? "row-enter" : ""
+                  }`}
+                >
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-xs text-muted-foreground">
                       {task.task_id.slice(0, 8)}
@@ -57,7 +62,7 @@ export function TaskFeedPanel() {
                     <span>
                       {task.task_type} · {task.trigger}
                     </span>
-                    <span>{new Date(task.created_at).toLocaleTimeString()}</span>
+                    <span className="font-mono">{new Date(task.created_at).toLocaleTimeString()}</span>
                   </div>
                 </li>
               ))}

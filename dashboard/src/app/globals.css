@@ -8,7 +8,7 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-mono);
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -49,6 +49,14 @@
 }
 
 :root {
+  /* --font-sans previously referenced itself here (var(--font-sans)), a circular definition
+     that silently fell back to the browser's default serif face -- see layout.tsx for the
+     real Geist Sans variable this now points to. --font-mono points to JetBrains Mono,
+     loaded the same way -- both are set here, once, not per-mode (typography doesn't change
+     between light/dark). */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "SFMono-Regular", monospace;
+
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -90,41 +98,48 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  /* Dark-mode steps of the same 8-hue palette (references/palette.md) -- same slot order. */
+  /* Flat, solid zinc -- no hue tint, no gradient, no glow. Extremely dark gray, never pure
+     black (#000000 crushes borders/shadows to invisible and reads as a cheap OLED trick). */
+  --background: #09090b; /* zinc-950 */
+  --foreground: #fafafa; /* zinc-50 */
+  --card: #0f0f11; /* one flat step up from the page -- structure via a real border, not a shadow */
+  --card-foreground: #fafafa;
+  --popover: #0f0f11;
+  --popover-foreground: #fafafa;
+  /* Brutalist primary action: solid white fill, black text -- literal, not a tinted "accent". */
+  --primary: #ffffff;
+  --primary-foreground: #000000;
+  --secondary: #18181b; /* zinc-900 */
+  --secondary-foreground: #fafafa;
+  --muted: #18181b;
+  --muted-foreground: #71717a; /* zinc-500 -- the exact "tiny, muted, uppercase label" gray */
+  --accent: #18181b;
+  --accent-foreground: #fafafa;
+  --destructive: #ef4444; /* flat red-500, used as a solid text/icon color -- see button.tsx
+                              for why Reject itself uses explicit red-950/red-400 utilities
+                              instead of a translucent var(--destructive)/NN mix */
+  --border: #27272a; /* zinc-800 -- the one hairline that separates every card */
+  --input: #27272a;
+  --ring: #3f3f46; /* zinc-700, flat focus ring, no glow */
+  /* Dark-mode steps of the same 8-hue palette (references/palette.md) -- same slot order,
+     UNCHANGED hexes: these are validated (scripts/validate_palette.js) against the surface
+     below and re-coloring them for mood would just break that validation for no real gain. */
   --chart-1: #3987e5;
   --chart-2: #d95926;
   --chart-3: #199e70;
   --chart-4: #c98500;
   --chart-5: #d55181;
-  --chart-surface: #1a1a19;
-  --chart-gridline: #2c2c2a;
-  --chart-baseline: #383835;
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --chart-surface: #0f0f11; /* == --card, so a chart never looks like a separate surface */
+  --chart-gridline: #27272a; /* == --border */
+  --chart-baseline: #3f3f46; /* == --ring, one step brighter than the gridlines */
+  --sidebar: #0f0f11;
+  --sidebar-foreground: #fafafa;
+  --sidebar-primary: #ffffff;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #18181b;
+  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border: #27272a;
+  --sidebar-ring: #3f3f46;
 }
 
 @layer base {
@@ -137,4 +152,59 @@
   html {
     @apply font-sans;
   }
+}
+
+/* ---------------------------------------------------------------------------------------
+   A single, minimal live-row entrance: a flat background-color flash (never a gradient,
+   never a box-shadow glow) fading to normal over half a second. Respects
+   prefers-reduced-motion. This -- plus a plain opacity pulse on the connection dot -- is
+   the entire motion budget; everything else in this app is static.
+   --------------------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes row-enter {
+    0% {
+      opacity: 0;
+      transform: translateY(-4px);
+      background-color: var(--muted);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes dot-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  .row-enter {
+    animation: row-enter 500ms ease-out;
+  }
+
+  .status-dot-live {
+    animation: dot-pulse 2s ease-in-out infinite;
+  }
+}
+
+/* Smooth height-animated collapse for the SQL accordion (ActionFeedPanel) -- the CSS
+   grid-rows trick: animating 0fr -> 1fr on the grid track animates to the content's real
+   height with no JS measurement and no fixed max-height guess. */
+.accordion-rows {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms ease;
+}
+.accordion-rows[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.accordion-rows > div {
+  overflow: hidden;
+  min-height: 0;
 }

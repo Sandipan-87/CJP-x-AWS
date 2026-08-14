@@ -18,16 +18,16 @@ const getInspectorKey = (e: InspectorEvent) => e.item.item_id;
 // `decisions.citations` (engram_reader has no grant there yet) -- see the route handler's own
 // comment for why that's a stated, separate gap, not silently glossed over here.
 export function MemoryInspectorPanel() {
-  const { events, connected } = useSse<InspectorEvent>("/api/sse/inspector", getInspectorKey);
+  const { events, connected, recentKeys } = useSse<InspectorEvent>("/api/sse/inspector", getInspectorKey);
   const items = [...events].reverse();
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center justify-between">
+        <CardTitle className="flex items-center justify-between text-xs tracking-widest text-muted-foreground uppercase">
           <span>Memory Inspector</span>
           <span
-            className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-emerald-500" : "bg-muted-foreground/30"}`}
           />
         </CardTitle>
       </CardHeader>
@@ -40,7 +40,12 @@ export function MemoryInspectorPanel() {
           ) : (
             <ul className="flex flex-col gap-2">
               {items.map(({ item }) => (
-                <li key={item.item_id} className="flex flex-col gap-1 rounded-lg border p-2 text-sm">
+                <li
+                  key={item.item_id}
+                  className={`flex flex-col gap-1.5 rounded-lg border border-border p-2.5 text-sm transition-colors ${
+                    recentKeys.has(item.item_id) ? "row-enter" : ""
+                  }`}
+                >
                   <div className="flex items-center justify-between">
                     <Badge variant="outline">{item.class}</Badge>
                     {item.confidence !== null && (
@@ -53,7 +58,7 @@ export function MemoryInspectorPanel() {
                     )}
                   </div>
                   <p className="line-clamp-2 text-xs text-muted-foreground">{item.content}</p>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="font-mono text-xs text-muted-foreground">
                     {new Date(item.created_at).toLocaleTimeString()}
                   </div>
                 </li>

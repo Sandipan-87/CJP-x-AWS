@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -17,19 +19,32 @@ const OUTCOME_VARIANT: Record<string, "secondary" | "destructive" | "outline"> =
   noop: "outline",
 };
 
+// Short, readable titles for the accordion header -- a judge should never have to parse SQL
+// just to know what an action WAS. Falls back to a titleized action_kind for anything not
+// listed here rather than hardcoding every possible kind.
+const ACTION_TITLES: Record<string, string> = {
+  create_index: "Index creation proposal",
+  drop_index: "Index removal proposal",
+  analyze_table: "Table analysis proposal",
+};
+
+function actionTitle(actionKind: string): string {
+  return ACTION_TITLES[actionKind] ?? `${actionKind.replaceAll("_", " ")} proposal`;
+}
+
 const getActionKey = (e: ActionEvent) => e.action.action_id;
 
 export function ActionFeedPanel() {
-  const { events, connected } = useSse<ActionEvent>("/api/sse/actions", getActionKey);
+  const { events, connected, recentKeys } = useSse<ActionEvent>("/api/sse/actions", getActionKey);
   const actions = [...events].reverse();
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center justify-between">
+        <CardTitle className="flex items-center justify-between text-xs tracking-widest text-muted-foreground uppercase">
           <span>Action Feed</span>
           <span
-            className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-emerald-500" : "bg-muted-foreground/30"}`}
           />
         </CardTitle>
       </CardHeader>
@@ -40,29 +55,58 @@ export function ActionFeedPanel() {
           ) : (
             <ul className="flex flex-col gap-2">
               {actions.map(({ action }) => (
-                <li key={action.action_id} className="flex flex-col gap-1 rounded-lg border p-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{action.action_kind}</span>
-                    <div className="flex gap-1">
-                      <Badge variant="outline">{action.status}</Badge>
-                      {action.outcome && (
-                        <Badge variant={OUTCOME_VARIANT[action.outcome] ?? "outline"}>
-                          {action.outcome}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <code className="truncate text-xs text-muted-foreground">{action.rendered_sql}</code>
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>approval: {action.approval_status ?? "—"}</span>
-                    <span>{new Date(action.created_at).toLocaleTimeString()}</span>
-                  </div>
-                </li>
+                <ActionFeedRow key={action.action_id} action={action} isNew={recentKeys.has(action.action_id)} />
               ))}
             </ul>
           )}
         </ScrollArea>
       </CardContent>
     </Card>
+  );
+}
+
+function ActionFeedRow({ action, isNew }: { action: ActionRow; isNew: boolean }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <li
+      className={`flex flex-col gap-1.5 rounded-lg border border-border p-2.5 text-sm transition-colors ${
+        isNew ? "row-enter" : ""
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <span className="font-medium">{action.action_kind}</span>
+        <div className="flex gap-1">
+          <Badge variant="outline">{action.status}</Badge>
+          {action.outcome && (
+            <Badge variant={OUTCOME_VARIANT[action.outcome] ?? "outline"}>{action.outcome}</Badge>
+          )}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
+        aria-expanded={open}
+      >
+        <ChevronDown className={`size-3 transition-transform ${open ? "rotate-180" : ""}`} />
+        {actionTitle(action.action_kind)}
+      </button>
+      {/* CSS grid-rows trick (globals.css .accordion-rows) -- animates to the SQL block's real
+          height with no JS measurement and no fixed max-height guess. */}
+      <div className="accordion-rows" data-open={open}>
+        <div>
+          <code className="mt-1 block rounded-md border border-border bg-background p-2 font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
+            {action.rendered_sql}
+          </code>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>approval: {action.approval_status ?? "—"}</span>
+        <span className="font-mono">{new Date(action.created_at).toLocaleTimeString()}</span>
+      </div>
+    </li>
   );
 }
