@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.errors import BackupGateBlocked, EngramError
-from agent.main import Runtime, _classify_exception, _initial_state, _thread_id_for_fingerprint, process_message
+from agent.main import Runtime, _classify_exception, _initial_state, _thread_id_for_fingerprint, consume_loop, process_message
 from agent.tools.sql_probe import ExplainResult
 
 
@@ -378,3 +378,44 @@ def test_incident_lease_lost_mid_run_parks(monkeypatch):
     assert outcome == "parked"
     assert "parked" in [s for _, s in db.status_updates]
     assert handle.released is True
+
+
+# ---------------------------------------------------------------- consume_loop
+
+
+def test_consume_loop_survives_an_exception_and_keeps_polling(monkeypatch):
+    """Regression test for a real bug found live: `consume_loop()` previously had NO
+    exception handling around `receive_message()`/`process_message()` at all -- a single
+    unhandled exception (from either call) silently killed the whole consumer task
+    forever, with no log line, since `main()` never inspects `running` for exceptions
+    until shutdown and the health endpoint (a separate coroutine) kept reporting healthy
+    regardless. A real deployed task was found zombied exactly this way -- 2+ real days
+    with zero log activity, reproduced again within minutes on a fresh replacement task,
+    diagnosed only by reproducing `process_message()` directly outside the container.
+    This test asserts the loop now logs and CONTINUES past a raised exception instead of
+    dying silently.
+    """
+    shutdown = asyncio.Event()
+    call_count = {"n": 0}
+
+    class _FakeSqsClient:
+        def receive_message(self, **kwargs):  # pragma: no cover -- never actually invoked,
+            return {"Messages": []}            # fake_to_thread intercepts the call entirely
+
+    async def fake_to_thread(fn, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("simulated transient SQS failure")
+        shutdown.set()  # stop the loop cleanly after proving it survived the first call
+        return {"Messages": []}
+
+    async def fast_sleep(*_a, **_k):
+        return
+
+    monkeypatch.setattr("agent.main.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr("agent.main.asyncio.sleep", fast_sleep)  # skip the real backoff delay
+
+    runtime = SimpleNamespace()  # never touched -- the exception fires before any real use
+    asyncio.run(consume_loop(runtime, sqs_client=_FakeSqsClient(), queue_url="fake", shutdown=shutdown))
+
+    assert call_count["n"] == 2  # proves the loop iterated again after the first call raised

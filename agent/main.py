@@ -498,31 +498,53 @@ async def consume_loop(runtime: Runtime, sqs_client: Any, queue_url: str, shutdo
     `graph.ainvoke()` isn't cooperatively cancellable mid-node, and LLD §4
     already accounts for the case where 25s isn't enough: "SIGKILL -> lease
     expiry + checkpoint tables cover it."
+
+    The whole loop body is wrapped in a bare `except Exception` (deliberately
+    broad -- this is the top of the consumer, there is no caller left to
+    handle anything more specific) that logs the full traceback and
+    continues, rather than letting the exception propagate. **Found live,
+    not theoretical**: this loop previously had NO exception handling at all
+    around `receive_message()`/`process_message()` -- a single unhandled
+    exception (from either call) silently killed this entire
+    `asyncio.ensure_future()`-scheduled task, since `main()` only ever
+    awaits `shutdown.wait()` and never inspects `running` for exceptions
+    until shutdown. The health endpoint runs in a SEPARATE coroutine, so it
+    kept reporting healthy the whole time -- a real deployed task was
+    confirmed silently zombied this way (zero log lines for 2+ real days,
+    reproduced again within minutes on a genuinely fresh replacement task),
+    completely invisible until diagnosed by reproducing `process_message()`
+    directly outside the container. A short sleep on the exception path
+    avoids a tight crash-loop against SQS/the DB if the failure is
+    persistent (e.g. a real outage) rather than a one-off.
     """
     while not shutdown.is_set():
-        resp = await asyncio.to_thread(
-            sqs_client.receive_message,
-            QueueUrl=queue_url, MaxNumberOfMessages=1, WaitTimeSeconds=DEFAULT_RECEIVE_WAIT_S,
-        )
-        messages = resp.get("Messages", [])
-        if not messages:
-            continue
-
-        raw = messages[0]
         try:
-            body = json.loads(raw["Body"])
-        except (KeyError, json.JSONDecodeError) as exc:
-            # Permanently malformed -- no retry will ever fix this, but deleting it ourselves
-            # would hide that a publisher is broken. Leave it for the queue's own redrive
-            # policy (infra concern) to eventually DLQ.
-            logger.error("malformed SQS message, leaving for redrive policy: %s", exc)
-            continue
+            resp = await asyncio.to_thread(
+                sqs_client.receive_message,
+                QueueUrl=queue_url, MaxNumberOfMessages=1, WaitTimeSeconds=DEFAULT_RECEIVE_WAIT_S,
+            )
+            messages = resp.get("Messages", [])
+            if not messages:
+                continue
 
-        outcome = await process_message(runtime, body)
-        if outcome in ("completed", "parked"):
-            await _delete_message(sqs_client, queue_url, raw["ReceiptHandle"])
-        else:
-            logger.warning("message left un-acked for redelivery/DLQ, outcome=%r", outcome)
+            raw = messages[0]
+            try:
+                body = json.loads(raw["Body"])
+            except (KeyError, json.JSONDecodeError) as exc:
+                # Permanently malformed -- no retry will ever fix this, but deleting it ourselves
+                # would hide that a publisher is broken. Leave it for the queue's own redrive
+                # policy (infra concern) to eventually DLQ.
+                logger.error("malformed SQS message, leaving for redrive policy: %s", exc)
+                continue
+
+            outcome = await process_message(runtime, body)
+            if outcome in ("completed", "parked"):
+                await _delete_message(sqs_client, queue_url, raw["ReceiptHandle"])
+            else:
+                logger.warning("message left un-acked for redelivery/DLQ, outcome=%r", outcome)
+        except Exception:  # noqa: BLE001 -- top of the consumer; log loudly and keep polling
+            logger.exception("consume_loop iteration failed -- continuing, not dying silently")
+            await asyncio.sleep(DEFAULT_RECEIVE_WAIT_S)
 
 
 async def _handle_health_request(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, runtime: Runtime) -> None:
