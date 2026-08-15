@@ -127,6 +127,20 @@ recording time forcing a "success" outcome that isn't available. Reframe instead
 - Only if there's real schedule slack: delay recording by a day rather than force this fallback,
   if the extra day is actually available before the Aug 18 12:00 ET submission cutoff.
 
+## Real measured numbers, captured 2026-08-15 (fresh backup, post consume_loop fix)
+
+The first full clean success after this session's fix + backup clearing, confirmed directly in
+the dashboard (Memory Inspector + Metrics panel), worth pulling straight into the README's
+"measured numbers" section:
+
+- `demo_remembers_1c`: `CREATE INDEX` applied, **latency 1100.0ms → 19.0ms (success)** — a real,
+  measured ~58x drop.
+- Recall similarity across three separate incidents on this scope: **62%, 50%, 51%** — the
+  "it remembers" beat reproducing consistently, not a one-off.
+- **Time to remediation: 15.6s** · **LLM latency: 9.2s** · **Sweep cycle: 1.62s** (1h window).
+- `Blocked by backup gate: —` for this window — confirms the gate is genuinely passing now, not
+  a fluke of one run.
+
 ## Standing operational notes carried into this plan
 
 - RU budget: target cluster capped at 45,000,000 as of 2026-08-15 (raised from 35M mid-session
