@@ -141,6 +141,27 @@ the dashboard (Memory Inspector + Metrics panel), worth pulling straight into th
 - `Blocked by backup gate: —` for this window — confirms the gate is genuinely passing now, not
   a fluke of one run.
 
+## Real finding: CockroachDB's own EXPLAIN ANALYZE output rounds away sub-second precision near 1000ms
+
+Discovered 2026-08-15 while testing incident #2: `demo_remembers_2` at 1.5M rows measured
+**exactly `1000.0ms` on two separate attempts** — not normal variance, a real parsing artifact.
+`agent/tools/sql_probe.py`'s `_EXEC_TIME_RE` regex just converts whatever CockroachDB's own
+`EXPLAIN ANALYZE` output prints (`"execution time: X unit"`) — and CockroachDB itself drops all
+decimal precision once the real duration rounds to a clean whole second (prints `"1s"`, not
+`"0.987s"` or `"1.02s"`). Since `is_anomaly()` requires **strictly greater than** 1000ms, a
+duration that happens to format as exactly `"1s"` can NEVER trip the threshold, no matter how
+many times you retry the same query — retrying doesn't help here, since the real duration isn't
+actually changing (or is only changing slightly, evidently not enough to shift how CockroachDB
+formats it, since it repeated `1000.0` twice in a row).
+
+**Practical implication for building scenario tables**: don't aim for "just over 1000ms" — aim
+comfortably clear of it (1400ms+, like `demo_remembers_1c`'s `1100.0ms` which parsed fine because
+`"1.1s"` DOES carry a decimal, or better). The fix used live: added 500k more rows to the same
+table (2M total, incremental `INSERT`, not a full rebuild) rather than retrying — pushed the real
+measurement to `1600.0ms`, comfortably clear, and it worked immediately. **For the friend's-account
+tables tomorrow, build at ~2-2.5M rows from the start, not 1.5M** — 1.5M has now shown it sits
+right at this exact ambiguous boundary.
+
 ## Standing operational notes carried into this plan
 
 - RU budget: target cluster capped at 45,000,000 as of 2026-08-15 (raised from 35M mid-session
