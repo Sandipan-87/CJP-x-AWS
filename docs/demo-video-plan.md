@@ -101,6 +101,32 @@ guest-accessible demo URL. All five are placed above — don't let editing press
 - After submitting: **don't tear anything down** — keep ECS/CockroachDB/the dashboard alive
   through judging.
 
+## Contingency: if the backup gate is still stale on recording day
+
+Confirmed 2026-08-15: **there is no way to force an on-demand backup** for this cluster.
+`POST /api/v1/clusters/{id}/backups` returns a hard `405 Method Not Allowed`, and the Cloud
+console's own Backup Settings dialog states plainly: "Backup settings for Basic tier clusters
+cannot be modified" — the schedule is a fixed "every 24 hours" with no manual trigger exposed
+anywhere. The cluster's own backup history (`08-09, 08-11, 08-12, 08-13`, then gaps at `08-10`
+and `08-14`) shows this schedule doesn't always fire reliably either — so freshness on any given
+day is genuinely not something we control or can reliably predict.
+
+**If Aug 17's dress rehearsal/recording hits the same `BackupGateBlocked` wall again**, don't burn
+recording time forcing a "success" outcome that isn't available. Reframe instead:
+- Lead Beat 1 with the **recall/similarity moment** (0:50–1:15 in the shot list) — this doesn't
+  depend on the backup gate at all; `observe → recall → reason → gate` all complete and produce
+  a real approval regardless of backup state. Only `act_measure`'s final DDL apply is gated.
+- Frame the backup-gate block as the **intentional safety beat** for both incidents shown, not a
+  workaround: "because a fresh backup isn't available right now, watch it correctly refuse to
+  touch the database rather than risk an unrecoverable change" — this is honest, still
+  interesting, and already on the "never cut" list regardless.
+- For Beat 2 (kill-and-resume), the core proof — **exactly one decision/action row despite the
+  kill** — still holds even if that one row's outcome is `blocked_by_backup_gate` rather than
+  `success`. Less dazzling than a real applied fix, but still a complete, honest, technically
+  valid demonstration of the resilience mechanism.
+- Only if there's real schedule slack: delay recording by a day rather than force this fallback,
+  if the extra day is actually available before the Aug 18 12:00 ET submission cutoff.
+
 ## Standing operational notes carried into this plan
 
 - RU budget: target cluster capped at 45,000,000 as of 2026-08-15 (raised from 35M mid-session
