@@ -101,6 +101,16 @@ guest-accessible demo URL. All five are placed above — don't let editing press
 - After submitting: **don't tear anything down** — keep ECS/CockroachDB/the dashboard alive
   through judging.
 
+## Switching to a friend's account for the final recording
+
+Decided 2026-08-15: the current sandbox target cluster hit real RU scarcity (~41.6M of the
+self-imposed 45M cap) after a full day of live testing, so the actual final recording will use a
+genuinely separate CockroachDB Cloud organization instead (a friend's new account — fresh 50M
+RU/month, independent of this project's own usage history). Full step-by-step procedure:
+`docs/friend-account-setup.md`. Same caveat as the original backup-gate wait applies again — a
+brand-new cluster starts with zero backups, so budget the same ~24h wait before its first
+automatic backup exists.
+
 ## Contingency: if the backup gate is still stale on recording day
 
 Confirmed 2026-08-15: **there is no way to force an on-demand backup** for this cluster.
