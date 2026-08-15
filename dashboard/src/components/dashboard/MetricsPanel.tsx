@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChartSeries, LineChart } from "@/components/dashboard/LineChart";
 import { StatTile } from "@/components/dashboard/StatTile";
 import type { MetricsResponse } from "@/lib/types";
@@ -126,18 +127,20 @@ export function MetricsPanel() {
   const metrics = data?.metrics;
 
   return (
-    <Card className="md:col-span-2 xl:col-span-4">
+    // h-full, not a spanning grid cell -- this panel is now the whole third column of the
+    // page's 3-column cockpit (page.tsx), not a wide row underneath a 4-column grid.
+    <Card className="flex h-full flex-col">
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-xs tracking-widest text-muted-foreground uppercase">
           <span>Metrics</span>
           <div className="flex items-center gap-3">
             {/* Filters: one row, above the charts, date-range presets (references/interaction.md) */}
-            <div className="flex gap-1 rounded-md border border-border p-0.5">
+            <div className="flex gap-1 border border-border p-0.5">
               {WINDOWS.map((w) => (
                 <button
                   key={w}
                   onClick={() => setWindow(w)}
-                  className={`rounded px-2.5 py-1 font-mono text-xs font-medium normal-case transition-colors ${
+                  className={`px-2.5 py-1 font-mono text-xs font-medium normal-case transition-colors ${
                     w === window
                       ? "bg-foreground text-background"
                       : "text-muted-foreground hover:bg-accent"
@@ -155,46 +158,53 @@ export function MetricsPanel() {
           </div>
         </CardTitle>
       </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        {error && (
-          <p className="rounded-md border border-red-900 bg-red-950 p-3 text-sm text-red-400">
-            {error}
-          </p>
-        )}
+      {/* Internal scroll, same convention as every other feed panel -- this column never
+          forces the page itself to scroll (PRODUCT.md/DESIGN.md's fixed 100vh cockpit). */}
+      <CardContent className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full">
+          <div className="flex flex-col gap-4 pr-2">
+            {error && (
+              <p className="border border-red-900 bg-red-950 p-3 text-sm text-red-400">
+                {error}
+              </p>
+            )}
 
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-          <div>
-            <h3 className="mb-2 text-xs tracking-wide text-muted-foreground uppercase">Recall hit rate</h3>
-            <LineChart
-              series={toChartSeries(metrics?.["recall_hit_rate"])}
-              yDomain={[0, 1]}
-              yFormat={(v) => `${Math.round(v * 100)}%`}
-              emptyLabel="No recall events yet in this window."
-            />
+            {/* Stacked, not side-by-side -- this column is roughly a third of the old
+                full-width row, too narrow for two charts abreast. */}
+            <div className="flex flex-col gap-4">
+              <div>
+                <h3 className="mb-2 text-xs tracking-wide text-muted-foreground uppercase">Recall hit rate</h3>
+                <LineChart
+                  height={140}
+                  series={toChartSeries(metrics?.["recall_hit_rate"])}
+                  yDomain={[0, 1]}
+                  yFormat={(v) => `${Math.round(v * 100)}%`}
+                  emptyLabel="No recall events yet in this window."
+                />
+              </div>
+              <div>
+                <h3 className="mb-2 text-xs tracking-wide text-muted-foreground uppercase">LLM token usage</h3>
+                <LineChart
+                  height={140}
+                  series={toChartSeries(metrics?.["llm_token_usage"])}
+                  emptyLabel="No LLM calls yet in this window."
+                />
+              </div>
+            </div>
+
+            {/* One outer border, hairline dividers between cells -- a flat stat strip, not
+                six separately-boxed cards. See StatTile's own comment. 3 columns (2 rows),
+                not 6-across -- this is a third of the old full-width row's space. */}
+            <div className="grid grid-cols-3 divide-x divide-y divide-border border border-border">
+              <StatTile label="Time to remediation" value={formatSeconds(latestValue(metrics?.["time_to_remediation"]))} />
+              <StatTile label="LLM latency" value={formatMs(latestValue(metrics?.["llm_latency_ms"]))} />
+              <StatTile label="Sweep cycle" value={formatMs(latestValue(metrics?.["sweep_cycle_ms"]))} />
+              <StatTile label="Blocked by backup gate" value={formatCount(sumValue(metrics?.["blocked_by_backup_gate"]))} hint="this window" />
+              <StatTile label="Exactly-once conflicts" value={formatCount(sumValue(metrics?.["exactly_once_conflicts_detected"]))} hint="this window" />
+              <StatTile label="LLM failures" value={formatCount(sumValue(metrics?.["llm_failures"]))} hint="this window" />
+            </div>
           </div>
-          <div>
-            <h3 className="mb-2 text-xs tracking-wide text-muted-foreground uppercase">LLM token usage</h3>
-            <LineChart
-              series={toChartSeries(metrics?.["llm_token_usage"])}
-              emptyLabel="No LLM calls yet in this window."
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <StatTile label="Time to remediation" value={formatSeconds(latestValue(metrics?.["time_to_remediation"]))} />
-          <StatTile label="LLM latency" value={formatMs(latestValue(metrics?.["llm_latency_ms"]))} />
-          <StatTile label="Sweep cycle" value={formatMs(latestValue(metrics?.["sweep_cycle_ms"]))} />
-          <StatTile label="Blocked by backup gate" value={formatCount(sumValue(metrics?.["blocked_by_backup_gate"]))} hint="this window" />
-          <StatTile label="Exactly-once conflicts" value={formatCount(sumValue(metrics?.["exactly_once_conflicts_detected"]))} hint="this window" />
-          <StatTile label="LLM failures" value={formatCount(sumValue(metrics?.["llm_failures"]))} hint="this window" />
-        </div>
-
-        {data && data.omitted.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            Not tracked yet: {data.omitted.join("; ")}
-          </p>
-        )}
+        </ScrollArea>
       </CardContent>
     </Card>
   );

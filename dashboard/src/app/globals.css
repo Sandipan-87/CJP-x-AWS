@@ -27,6 +27,8 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-success-foreground: var(--success-foreground);
+  --color-success: var(--success);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -72,6 +74,9 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  --success: #059669; /* emerald-600 -- unused (this app is dark-only, see layout.tsx), kept
+                          for token-pair completeness with every other color here. */
+  --success-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -86,7 +91,12 @@
   --chart-surface: #fcfcfb;
   --chart-gridline: #e1e0d9;
   --chart-baseline: #c3c2b7;
-  --radius: 0.625rem;
+  /* 0 -- fully sharp corners. Every rounded-* utility in this app (Card, Button, Badge,
+     StatTile rows, the metrics window toggle) derives from this one token via the
+     @theme inline mapping above, so a brutalist devops console is one variable, not a
+     per-component sweep. Impeccable's own consistent-affordances rule: one shape,
+     everywhere, not "buttons are sharp but tooltips are still rounded". */
+  --radius: 0rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -99,25 +109,37 @@
 
 .dark {
   /* Flat, solid zinc -- no hue tint, no gradient, no glow. Extremely dark gray, never pure
-     black (#000000 crushes borders/shadows to invisible and reads as a cheap OLED trick). */
-  --background: #09090b; /* zinc-950 */
-  --foreground: #fafafa; /* zinc-50 */
-  --card: #0f0f11; /* one flat step up from the page -- structure via a real border, not a shadow */
-  --card-foreground: #fafafa;
-  --popover: #0f0f11;
-  --popover-foreground: #fafafa;
-  /* Brutalist primary action: solid white fill, black text -- literal, not a tinted "accent". */
+     black (#000000 crushes borders/shadows to invisible and reads as a cheap OLED trick).
+     DESIGN.md §1 is the authoritative record of this palette -- update both together. */
+  --background: #09090b; /* zinc-950, the one canvas tone */
+  --foreground: #f4f4f5; /* zinc-100 -- DESIGN.md's "high-contrast text" */
+  /* ONE surface tone everywhere (card/popover/secondary/muted/accent/sidebar all match) --
+     the prior --card (#0f0f11, "one step up from the page") is retired: a second surface
+     shade is exactly the kind of unearned depth cue DESIGN.md §7 bans. Structure comes from
+     the 1px border alone. */
+  --card: #18181b; /* zinc-900 */
+  --card-foreground: #f4f4f5;
+  --popover: #18181b;
+  --popover-foreground: #f4f4f5;
+  /* Brutalist primary action: solid white fill, black text -- literal, not a tinted "accent".
+     Kept distinct from --success (below): this is the generic default button, not the
+     approve/live semantic. */
   --primary: #ffffff;
   --primary-foreground: #000000;
-  --secondary: #18181b; /* zinc-900 */
-  --secondary-foreground: #fafafa;
+  --secondary: #18181b;
+  --secondary-foreground: #f4f4f5;
   --muted: #18181b;
   --muted-foreground: #71717a; /* zinc-500 -- the exact "tiny, muted, uppercase label" gray */
   --accent: #18181b;
-  --accent-foreground: #fafafa;
+  --accent-foreground: #f4f4f5;
   --destructive: #ef4444; /* flat red-500, used as a solid text/icon color -- see button.tsx
                               for why Reject itself uses explicit red-950/red-400 utilities
                               instead of a translucent var(--destructive)/NN mix */
+  /* DESIGN.md §6: the one accent color in this app, reserved for "active/live/stream/
+     approve" -- never decorative. emerald-950 foreground gives ~13:1 contrast on the
+     emerald-400 fill. */
+  --success: #34d399; /* emerald-400 */
+  --success-foreground: #022c22; /* emerald-950 */
   --border: #27272a; /* zinc-800 -- the one hairline that separates every card */
   --input: #27272a;
   --ring: #3f3f46; /* zinc-700, flat focus ring, no glow */
@@ -129,15 +151,15 @@
   --chart-3: #199e70;
   --chart-4: #c98500;
   --chart-5: #d55181;
-  --chart-surface: #0f0f11; /* == --card, so a chart never looks like a separate surface */
+  --chart-surface: #18181b; /* == --card, so a chart never looks like a separate surface */
   --chart-gridline: #27272a; /* == --border */
   --chart-baseline: #3f3f46; /* == --ring, one step brighter than the gridlines */
-  --sidebar: #0f0f11;
-  --sidebar-foreground: #fafafa;
+  --sidebar: #18181b;
+  --sidebar-foreground: #f4f4f5;
   --sidebar-primary: #ffffff;
   --sidebar-primary-foreground: #000000;
   --sidebar-accent: #18181b;
-  --sidebar-accent-foreground: #fafafa;
+  --sidebar-accent-foreground: #f4f4f5;
   --sidebar-border: #27272a;
   --sidebar-ring: #3f3f46;
 }
@@ -145,12 +167,46 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    /* Firefox scrollbar theming -- Chromium is themed separately below since it ignores
+       this property. Flat: the track is transparent, the thumb is the same hairline gray
+       as every border in this app, no accent color, no glow. */
+    scrollbar-color: var(--border) transparent;
   }
   body {
     @apply bg-background text-foreground;
   }
   html {
     @apply font-sans;
+  }
+  /* Browser chrome this app never drew still carries the design -- default text selection
+     is browser blue, a tell that reads as "assembled" not "built" (craft-floor.md's
+     browser-surfaces rule). Flat, no glow: a solid fill, the same brutalist white/black
+     already used for the primary button, not a translucent accent wash. */
+  ::selection {
+    background-color: var(--foreground);
+    color: var(--background);
+  }
+  /* Chromium/WebKit scrollbar theming -- flat hairline thumb, transparent track, square
+     corners (matches --radius: 0 everywhere else; a round scrollbar thumb next to sharp
+     panels would be the one inconsistent affordance left). */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 0;
+  }
+  /* Every id, timestamp, and metric in this app is font-mono -- tabular-nums keeps digit
+     columns from jittering horizontally as values change, the cheapest signal (per
+     craft-floor.md) that numeric UI was actually designed rather than left at defaults. */
+  .font-mono,
+  code,
+  pre {
+    font-variant-numeric: tabular-nums;
   }
 }
 

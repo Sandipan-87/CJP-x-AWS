@@ -4,13 +4,21 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  // Focus/invalid states are a hard 2px outline, never a `ring` -- a ring is a box-shadow
+  // under the hood and renders as a soft blurred halo (a glow), which this project's own
+  // strict brutalist rules ban outright. outline-offset keeps it from touching the border.
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:outline-2 aria-invalid:outline-offset-2 aria-invalid:outline-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
         // Brutalist primary: solid white fill, black text (--primary/--primary-foreground,
         // see globals.css) -- hover is a flat opacity drop, never a glow or a color shift.
         default: "bg-primary text-primary-foreground hover:opacity-80",
+        // DESIGN.md §6: the one accent color in this app (emerald-400/--success), reserved
+        // for "active/live/stream/approve" -- kept as its own variant rather than
+        // repurposing `default`, so the brutalist white/black meaning and the
+        // approve/live meaning never collide under one name.
+        success: "bg-success text-success-foreground hover:opacity-80",
         outline:
           "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:

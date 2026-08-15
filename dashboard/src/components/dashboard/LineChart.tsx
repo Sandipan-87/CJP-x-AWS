@@ -45,8 +45,16 @@ function scale(domain: [number, number], range: [number, number]) {
   return (v: number) => (d1 === d0 ? (r0 + r1) / 2 : r0 + ((v - d0) / (d1 - d0)) * (r1 - r0));
 }
 
+// Tiered suffixes, not just K -- a lone `/1000` step read raw millions-scale values (this
+// project's own known pre-fix llm_token_usage historical data, see
+// agent/providers/ollama_cloud_llm.py's fix) as a numeric-slop string like "10356442.1K"
+// instead of "10.4M". Formatting the data these charts already receive; not a claim that the
+// underlying numbers are new or corrected.
 function defaultYFormat(v: number): string {
-  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}K`;
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 

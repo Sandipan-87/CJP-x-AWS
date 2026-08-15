@@ -106,11 +106,19 @@ async def main(sslrootcert: str | None) -> int:
         sep = "&" if "?" in full_admin_dsn else "?"
         full_admin_dsn = f"{full_admin_dsn}{sep}sslrootcert={sslrootcert}"
 
+    # The migration's `ALTER DEFAULT PRIVILEGES FOR ROLE engram_admin ...` statements assume the
+    # target cluster's admin role is literally named `engram_admin` (true for the original sandbox
+    # cluster). A different CockroachDB Cloud org (e.g. a friend's account) names the admin role
+    # after whoever signed up instead -- substitute the real admin username from ENGRAM_TARGET_DSN
+    # so this migration still applies correctly. No-op when the DSN user really is `engram_admin`.
+    admin_role = urlparse(admin_dsn).username or "engram_admin"
+
     print(f"{RULE}\nSTEP 1 -- run db/target/001_target_roles.sql (schema/grants, no secrets)\n{RULE}")
     conn = await psycopg.AsyncConnection.connect(full_admin_dsn, autocommit=True)
     try:
         async with conn.cursor() as cur:
             for stmt in _statements_from_sql_file(MIGRATION):
+                stmt = stmt.replace("engram_admin", admin_role)
                 await cur.execute(stmt)
                 print(f"  executed: {stmt.splitlines()[0]}...")
 

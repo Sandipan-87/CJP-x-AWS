@@ -29,26 +29,31 @@ export function TaskFeedPanel() {
   const tasks = [...events].reverse();
 
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader>
         <CardTitle className="flex items-center justify-between text-xs tracking-widest text-muted-foreground uppercase">
           <span>Recent Tasks</span>
           <span
-            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-emerald-500" : "bg-muted-foreground/30"}`}
+            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-success" : "bg-muted-foreground/30"}`}
             title={connected ? "SSE connected" : "reconnecting…"}
           />
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <ScrollArea className="h-72">
+      <CardContent className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full">
           {tasks.length === 0 ? (
             <p className="text-sm text-muted-foreground">No tasks yet — waiting for the first sweep.</p>
           ) : (
-            <ul className="flex flex-col gap-2">
+            // A flat data-table, not a stack of mini-cards: each row is a hairline BOTTOM
+            // divider only (no box, no rounding, no per-row background) -- a bordered,
+            // rounded `li` inside an already-bordered Card was the literal "nested cards"
+            // pattern this app was banning everywhere else. `divide-y` puts exactly one
+            // border between rows, never a border on the last one.
+            <ul className="flex flex-col divide-y divide-border">
               {tasks.map(({ task }) => (
                 <li
                   key={task.task_id}
-                  className={`flex flex-col gap-1.5 rounded-lg border border-border p-2.5 text-sm transition-colors ${
+                  className={`flex flex-col gap-1 py-2 text-sm ${
                     recentKeys.has(task.task_id) ? "row-enter" : ""
                   }`}
                 >

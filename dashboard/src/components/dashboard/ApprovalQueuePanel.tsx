@@ -60,21 +60,25 @@ export function ApprovalQueuePanel() {
   }
 
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader>
         <CardTitle className="flex items-center justify-between text-xs tracking-widest text-muted-foreground uppercase">
           <span>Approval Queue</span>
           <span
-            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-emerald-500" : "bg-muted-foreground/30"}`}
+            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-success" : "bg-muted-foreground/30"}`}
           />
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <ScrollArea className="h-72">
+      <CardContent className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full">
           {approvals.length === 0 ? (
             <p className="text-sm text-muted-foreground">No pending approvals.</p>
           ) : (
-            <ul className="flex flex-col gap-2">
+            // divide-y, not per-row borders -- see TaskFeedPanel's comment on the nested-card
+            // fix. The old isPending-vs-not border-color distinction is dropped too: the
+            // status Badge already carries that signal, so a second border treatment for the
+            // same fact was redundant noise, not a second signal.
+            <ul className="flex flex-col divide-y divide-border">
               {approvals.map((approval) => {
                 const isPending = approval.status === "pending";
                 const isBusy = busyId === approval.approval_id;
@@ -82,13 +86,8 @@ export function ApprovalQueuePanel() {
                 return (
                   <li
                     key={approval.approval_id}
-                    className={`flex flex-col gap-2 rounded-lg border p-2.5 text-sm transition-colors ${
+                    className={`flex flex-col gap-1.5 py-2 text-sm ${
                       recentKeys.has(approval.approval_id) ? "row-enter" : ""
-                    } ${
-                      // A pending approval is the one a human still needs to act on -- a
-                      // slightly lighter, flat border is the entire distinguishing treatment,
-                      // no glow, no ring.
-                      isPending ? "border-zinc-600" : "border-border"
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -99,33 +98,44 @@ export function ApprovalQueuePanel() {
                         {approval.status}
                       </Badge>
                     </div>
-                    {/* grid, not flex -- Button's own base class sets shrink-0, so two `w-full`
-                        flex children each demand 100% width and overflow the row (silently
-                        clipped by Card's overflow-hidden, a real pre-existing bug found while
-                        visually checking this redesign: Reject rendered entirely off-screen).
-                        A 2-column grid divides the row exactly in half regardless of shrink. */}
-                    <div className="grid grid-cols-2 gap-2">
-                      {/* Brutalist primary: solid white / black text (variant="default"),
-                          hover is a flat opacity drop -- no glow, see button.tsx. */}
-                      <Button
-                        size="sm"
-                        variant="default"
-                        disabled={!isPending || isBusy}
-                        className="w-full"
-                        onClick={() => decide(approval.approval_id, "approve")}
-                      >
-                        {isBusy ? "…" : "Approve"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        disabled={!isPending || isBusy}
-                        className="w-full"
-                        onClick={() => decide(approval.approval_id, "reject")}
-                      >
-                        {isBusy ? "…" : "Reject"}
-                      </Button>
-                    </div>
+                    {/* Buttons render ONLY for a decision a human can actually make. A decided
+                        approval showing a disabled Approve/Reject pair was dead chrome nobody
+                        could ever click, and disabled:opacity-50 made the brutalist white/red
+                        fills read as washed-out grey boxes -- distilled away rather than
+                        patched, so every button this panel ever shows is at full, real
+                        contrast. */}
+                    {isPending && (
+                      // grid, not flex -- Button's own base class sets shrink-0, so two
+                      // `w-full` flex children each demand 100% width and overflow the row
+                      // (silently clipped by Card's overflow-hidden, a real pre-existing bug
+                      // found while visually checking the original redesign: Reject rendered
+                      // entirely off-screen). A 2-column grid divides the row exactly in half
+                      // regardless of shrink.
+                      <div className="grid grid-cols-2 gap-2">
+                        {/* DESIGN.md §6: emerald-400/--success is this app's one accent
+                            color, reserved for "approve" -- variant="success", not the
+                            brutalist white/black default. Hover is a flat opacity drop,
+                            never a glow. */}
+                        <Button
+                          size="sm"
+                          variant="success"
+                          disabled={isBusy}
+                          className="w-full"
+                          onClick={() => decide(approval.approval_id, "approve")}
+                        >
+                          {isBusy ? "…" : "Approve"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={isBusy}
+                          className="w-full"
+                          onClick={() => decide(approval.approval_id, "reject")}
+                        >
+                          {isBusy ? "…" : "Reject"}
+                        </Button>
+                      </div>
+                    )}
                     {error && <p className="text-xs text-red-400">{error}</p>}
                     <div className="font-mono text-xs text-muted-foreground">
                       requested {new Date(approval.requested_at).toLocaleTimeString()}

@@ -39,21 +39,23 @@ export function ActionFeedPanel() {
   const actions = [...events].reverse();
 
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader>
         <CardTitle className="flex items-center justify-between text-xs tracking-widest text-muted-foreground uppercase">
           <span>Action Feed</span>
           <span
-            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-emerald-500" : "bg-muted-foreground/30"}`}
+            className={`h-2 w-2 rounded-full ${connected ? "status-dot-live bg-success" : "bg-muted-foreground/30"}`}
           />
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <ScrollArea className="h-72">
+      <CardContent className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full">
           {actions.length === 0 ? (
             <p className="text-sm text-muted-foreground">No remediation actions yet.</p>
           ) : (
-            <ul className="flex flex-col gap-2">
+            // divide-y, not per-row borders -- see TaskFeedPanel's comment on why a boxed `li`
+            // inside an already-bordered Card was a real nested-card violation.
+            <ul className="flex flex-col divide-y divide-border">
               {actions.map(({ action }) => (
                 <ActionFeedRow key={action.action_id} action={action} isNew={recentKeys.has(action.action_id)} />
               ))}
@@ -70,7 +72,7 @@ function ActionFeedRow({ action, isNew }: { action: ActionRow; isNew: boolean })
 
   return (
     <li
-      className={`flex flex-col gap-1.5 rounded-lg border border-border p-2.5 text-sm transition-colors ${
+      className={`flex flex-col gap-1 py-2 text-sm ${
         isNew ? "row-enter" : ""
       }`}
     >
@@ -97,7 +99,9 @@ function ActionFeedRow({ action, isNew }: { action: ActionRow; isNew: boolean })
           height with no JS measurement and no fixed max-height guess. */}
       <div className="accordion-rows" data-open={open}>
         <div>
-          <code className="mt-1 block rounded-md border border-border bg-background p-2 font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
+          {/* bg-muted, no border -- a fill-color shift reads as "inset code block" without
+              stacking a second box border inside the row's own bottom-divider treatment. */}
+          <code className="mt-1 block bg-muted p-2 font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
             {action.rendered_sql}
           </code>
         </div>
