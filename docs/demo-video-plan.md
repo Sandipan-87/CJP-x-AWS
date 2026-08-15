@@ -65,35 +65,46 @@ guest-accessible demo URL. All five are placed above — don't let editing press
 - Submit on Devpost early enough to re-open the submission page yourself and confirm the video
   actually plays without login, per Devpost's own recommended check.
 
-## Day-by-day timeline (today is 2026-08-15)
+## Day-by-day timeline (today is 2026-08-15) — REVISED, see note below
 
-**Aug 15 (today, remainder)**
-- Finish the in-progress rehearsal once the CockroachDB Cloud backup-gate freshness clears
-  (target cluster backup was 47.6h old at last check, past the 24h window; a fresh nightly backup
-  was expected around the 2026-08-15 00:00 UTC boundary — re-check `GET
-  /api/v1/clusters/{id}/backups` before resuming, don't assume it cleared).
-- Complete: incident #1 success (real `CREATE INDEX` applied + measured latency drop), incident
-  #2's recall+success (the similarity-badge moment), and the kill-and-resume beat.
-- **Screen-record this whole rehearsal at real speed** — this becomes the raw footage; don't treat
-  "record the demo" as a separate future step from "finish the rehearsal."
-- Keep today's real `BackupGateBlocked` moment (already captured) — reusable directly in the edit.
+**Revised 2026-08-15, ~07:00 IST**: since it's still early morning, the friend's-account setup
+(`docs/friend-account-setup.md`) moves up to TODAY instead of tomorrow. This pulls the whole plan
+forward by a day: real tests + recording on Aug 16, Aug 17 becomes a genuine buffer/safety day
+before the Aug 18 submission, rather than the primary recording day. The timeline below is kept
+as originally written for its still-relevant content (what to do, not necessarily which exact
+calendar day) — treat "Aug 16" below as "the day after friend-account setup" and "Aug 17" as
+"buffer," per this revision.
 
-**Aug 16**
-- Morning: write `README.md` (quickstart, diagram, tables, measured numbers, falsifiability
-  paragraph — see "the gap found" section above for exactly what to pull from where). Paste in the
-  AWS/CockroachDB written statements from `docs/submission-checklist.md §2/§5` verbatim.
-- Afternoon: edit yesterday's raw footage down to under 3:00 against the shot list above, add
-  the text overlays.
-- Evening: check the cut against the five "never cut" items, one by one.
+**Aug 15 (today)**
+- ~~Finish the in-progress rehearsal~~ — DONE: both Beat 1 incidents (real successes,
+  `1100ms→19ms` and `1600ms→4ms`) and Beat 2 kill-and-resume (real success, `1400ms→4ms`,
+  exactly-once verified at the DB level) all completed on the current sandbox cluster.
+- **NEW, moved up from tomorrow**: friend's CockroachDB account/cluster setup
+  (`docs/friend-account-setup.md` Steps 1-8, plus the cheap Step 8.5 wiring check — doesn't
+  need to wait on that cluster's first backup).
+- Real finding worth remembering for tomorrow: CockroachDB's own `EXPLAIN ANALYZE` output rounds
+  away sub-second precision near exactly 1000ms — build tomorrow's scenario tables at ~2-2.5M
+  rows, not 1.5M (see the dedicated section above).
 
-**Aug 17**
-- Do **one more full dress rehearsal on fresh scenario tables** (Aug 15's tables have warm caches
-  by now, and the backup-gate freshness will need re-checking again) — this is the safety margin,
-  not optional. Re-record here if Aug 16's footage has gaps.
-- Finalize video export and **upload by end of evening** (see production tips above — don't wait
-  for Aug 18).
-- Full QA pass: demo URL in an incognito window with zero prior login, README renders correctly
-  on GitHub, License visible in the About sidebar.
+**Aug 16 (the real test + recording day)**
+- Morning: check the friend's cluster's first backup has landed (expected around its own
+  `00:00 UTC` tick, ~5:30 AM IST, same pattern observed today — verify, don't assume, same as
+  every prior backup check this project has done).
+- Build the three real 2-2.5M row scenario tables (`docs/friend-account-setup.md` Step 9), run
+  all three beats for real (Step 10), screen-recording at real speed as you go.
+- Also today: write `README.md` (quickstart, diagram, tables, measured numbers, falsifiability
+  paragraph — see "the gap found" section above) and the word-for-word narration script.
+- Afternoon/evening: edit the footage down to under 3:00 against the shot list, add text
+  overlays, check against the five "never cut" items.
+- **Upload the video by end of today or early Aug 17** — per Devpost's own tip, don't leave
+  upload time for the last day.
+
+**Aug 17 (buffer day)**
+- Genuine safety margin, not a required work day — use it if Aug 16 hit a snag (a bad take, a
+  README gap, an upload that's still processing).
+- If everything from Aug 16 is solid: final QA pass — demo URL in an incognito window with zero
+  prior login, README renders correctly on GitHub, License visible in the About sidebar, video
+  plays without login.
 
 **Aug 18 (submit by 12:00 ET)**
 - Morning: one last stranger-eyes check of the demo URL and the uploaded video's playability.
