@@ -126,6 +126,29 @@ and pull its logs (same pattern used throughout today's session) to confirm a cl
 reachable`, `lease round-trip OK`. None of these checks directly touch the new TARGET cluster —
 that only gets exercised the first time a real message is sent (Step 10).
 
+## Step 8.5 — Cheap wiring check BEFORE building the real scenario tables
+
+Decided 2026-08-15: split verification into two phases so Aug 16's setup work isn't blocked on
+the ~24h backup wait at all. Build a tiny, cheap table first, purely to prove the wiring is
+correct:
+
+```
+python scripts/demo_run.py build --table wiring_check --rows 20000
+python scripts/demo_run.py send  --table wiring_check --scope wiring-check
+python scripts/demo_run.py watch --scope wiring-check
+```
+
+At 20,000 rows the measured latency will be nowhere near 1000ms, so this correctly classifies as
+a harmless `sweep` — **which never reaches `act_measure` or the backup gate at all**, meaning this
+check has zero dependency on whether the new cluster's first backup has landed yet. What it DOES
+prove: `ENGRAM_TARGET_DSN` connectivity, `ENGRAM_TARGET_PROBE_DSN` wiring (a real `EXPLAIN
+ANALYZE` against the new cluster inside `observe()`), and that the Secrets Manager update + ECS
+redeploy actually took effect — the agent is really talking to the new cluster, not silently
+still pointed at the old one. It deliberately does NOT exercise `ENGRAM_TARGET_OPERATOR_DSN`'s
+`CREATE INDEX` grant or the backup gate — those are the same already-proven code paths, just
+under new credentials, and get their real proof in Step 10 once a backup exists. Drop
+`wiring_check` afterward (`python scripts/demo_run.py drop --table wiring_check`).
+
 ## Step 9 — Build scenario tables
 
 **Use ~2-2.5M rows, not 1.5M** — today's real finding was that 1.5M rows sits right at an
