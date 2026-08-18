@@ -38,6 +38,14 @@ Thumbs.db
 *.log
 scratch/
 
+# Demo-video production notes (execution plan / recording run-sheet / narration script) —
+# internal working docs for recording the submission video, not project code or evidence;
+# don't belong in a public hackathon repo. Listed by exact path, not a blanket *.md rule,
+# per this project's own standing rule against blanket gitignores hiding real content.
+docs/demo-video-plan.md
+docs/demo-video-script.md
+docs/demo-video-final-script.md
+
 # db/ holds SQL source (migrations, console-paste chunks) that IS committed —
 # only ignore actual local scratch state under it, never the .sql sources.
 db/*.db

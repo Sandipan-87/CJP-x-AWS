@@ -11,6 +11,10 @@ no login, no credentials required.
 
 **License:** Apache-2.0 (see [`LICENSE`](./LICENSE)).
 
+**Demo video:** script finalized and the live footage recorded (`docs/demo-video-final-script.md`
+— a two-narrator voiceover over a single continuous take, 2:59 runtime); upload/public link to be
+added here once the edited video is exported.
+
 ---
 
 ## The two things this project exists to prove
@@ -166,7 +170,8 @@ allowlisted enum with typed parameters, and the adapter builds the statement.
 | A real applied fix | 1600.0ms → 4.0ms (success) | Live rehearsal |
 | Kill-and-resume, applied fix | 1400.0ms → 4.0ms (success) | Live rehearsal, exactly-once confirmed at the DB level |
 | A correct, honest failure (measured regression) | 143.0ms → 155.0ms (`ANALYZE` alone can't fix a missing index) | Re-plan-edge live test |
-| Recall similarity across separate incidents on a familiar shape | 62%, 50%, 51% | Live rehearsal |
+| Recall similarity across separate incidents on a familiar shape | 62%, 50%, 51%, 61.6% | Live rehearsal (incl. friend-cluster final-recording rehearsal) |
+| Proposed-fix confidence, friend-cluster final-recording rehearsal | 0.97 | `create_index` proposal, Session 45 |
 | Time to remediation | 15.6s | Live rehearsal |
 | LLM latency (Ollama Cloud round-trip) | 9.2s | Live rehearsal |
 | Sweep cycle | 1.62s | 1h dashboard window |
@@ -226,6 +231,8 @@ none of it depends on trusting a claim in this README.
   target cluster) — the two clusters are never conflated, by design.
 - `design/` — high-level and low-level design documents.
 - `docs/` — operational documentation: external-constraints, invariants, coding conduct, the
-  submission checklist, and this project's full session-by-session changelog (`CLAUDE.md`).
+  submission checklist, this project's full session-by-session changelog (`CLAUDE.md`), and the
+  demo video materials (`demo-video-plan.md`, `demo-video-script.md`, `demo-video-final-script.md`
+  — the last is the one actually recorded from).
 - `scripts/` — bootstrap, verification, and live-demo-running scripts.
 - `tests/` — unit tests (226+, no live credentials needed).
