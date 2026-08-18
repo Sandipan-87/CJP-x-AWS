@@ -46,6 +46,11 @@ docs/demo-video-plan.md
 docs/demo-video-script.md
 docs/demo-video-final-script.md
 
+# Raw/edited demo recording -- large binary, doesn't belong in git history at all
+# (no LFS configured here); upload straight to YouTube/Devpost instead.
+CJP_Recording.mp4
+*.mp4
+
 # db/ holds SQL source (migrations, console-paste chunks) that IS committed —
 # only ignore actual local scratch state under it, never the .sql sources.
 db/*.db
