@@ -45,6 +45,7 @@ scratch/
 docs/demo-video-plan.md
 docs/demo-video-script.md
 docs/demo-video-final-script.md
+docs/devpost-submission-answers.md
 
 # Raw/edited demo recording -- large binary, doesn't belong in git history at all
 # (no LFS configured here); upload straight to YouTube/Devpost instead.

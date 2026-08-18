@@ -702,7 +702,7 @@ different signal. Decide it here, not on Day 9 — the refusal beat is on the
 
 | Field | Value |
 |---|---|
-| Repo URL | `https://github.com/Sandipan-87/CJP-x-AWS` |
+| Repo URL | `https://github.com/Sandipan-87/ENGRAM` (renamed from `CJP-x-AWS`, 2026-08-18) |
 | First commit SHA | `430400887b387f3a44f94da6dbe3ec994d376ee2` |
 | First commit date (must be after 2026-06-30) | `2026-08-02 23:46:16 +0530` — ✅ after the window opened |
 | `LICENSE` present in that first commit | ☐ **No** — and per the corrected rule (`docs/blocked-register.md` §4) this does not need to be Yes; only current About-sidebar visibility is required |
